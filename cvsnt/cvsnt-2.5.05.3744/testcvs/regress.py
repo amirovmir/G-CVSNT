@@ -79,6 +79,27 @@ def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", newline="\n") as f:
         f.write(text)
+    bump_mtime(path)
+
+
+def write_bytes(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
+    bump_mtime(path)
+
+
+def bump_mtime(path):
+    """Move a working file's mtime past the second CVS recorded in Entries.
+
+    Modified-ness is decided by comparing the Entries timestamp with the
+    file mtime at whole-second granularity.  A rewrite landing in the same
+    second as the checkout that produced the file leaves the two equal, so
+    the file reads as unmodified and commit or update -C become silent
+    no-ops.  On Windows the checkout is slow enough that the second has
+    usually rolled over; on Linux it has not.
+    """
+    st = os.stat(path)
+    os.utime(path, (st.st_atime + 2, st.st_mtime + 2))
 
 
 def read(path):
@@ -381,11 +402,9 @@ def t_no_backup_nonmergeable(r):
     os.makedirs(wc2root)
     r.cvs(["checkout", "mb"], cwd=wc2root)
     wc2 = os.path.join(wc2root, "mb")
-    with open(os.path.join(wc2, "b.dat"), "wb") as f:
-        f.write(payload2)
+    write_bytes(os.path.join(wc2, "b.dat"), payload2)
     r.cvs(["commit", "-m", "second"], cwd=wc2)
-    with open(os.path.join(wc, "b.dat"), "wb") as f:
-        f.write(local)
+    write_bytes(os.path.join(wc, "b.dat"), local)
 
     rc, out = r.cvs(["update", "-n"], cwd=wc, expect_ok=False)
     check("nonmergeable file needs merge" in out,
@@ -563,8 +582,7 @@ def t_binary(r):
     # The commit half of the round trip: change the bytes, commit, and
     # read them back through a fresh checkout.
     payload2 = bytes(reversed(payload)) + b"\x00\x01\x02"
-    with open(os.path.join(r.wc, "mb", "bin.dat"), "wb") as f:
-        f.write(payload2)
+    write_bytes(os.path.join(r.wc, "mb", "bin.dat"), payload2)
     r.cvs(["commit", "-m", "bin2"], cwd=os.path.join(r.wc, "mb"))
     wcroot = os.path.join(r.root, "wcbin2")
     os.makedirs(wcroot)
@@ -590,8 +608,7 @@ def t_binary_second_commit(r):
     r.cvs(["import", "-m", "bin", "-kb", "mb", "VENDOR", "REL0"], cwd=imp)
     wc = r.checkout("mb")
 
-    with open(os.path.join(wc, "b.dat"), "wb") as f:
-        f.write(payload2)
+    write_bytes(os.path.join(wc, "b.dat"), payload2)
     _, out = r.cvs(["commit", "-m", "second"], cwd=wc)
     check("new revision" in out, "second binary commit did not succeed:\n" + out)
 
@@ -1507,8 +1524,7 @@ def t_binary_small_second_commit(r):
              (1541, bytes([255, 254])))
     for n, (size, prefix) in enumerate(cases):
         payload = (prefix + base)[:size]
-        with open(os.path.join(wc, "b.dat"), "wb") as f:
-            f.write(payload)
+        write_bytes(os.path.join(wc, "b.dat"), payload)
         r.cvs(["commit", "-m", "rev %d" % n], cwd=wc)
         fresh = os.path.join(r.root, "fresh%d" % n)
         os.makedirs(fresh)
