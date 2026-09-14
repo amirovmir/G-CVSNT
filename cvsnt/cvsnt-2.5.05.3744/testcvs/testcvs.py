@@ -67,7 +67,13 @@ def file_not_exists(filename):
 
 def file_copy(srcfile,destfile):
   if(verbose): print("Copy "+srcfile+" -> "+destfile)
-  shutil.copyfile(srcfile,destfile) 
+  shutil.copyfile(srcfile,destfile)
+  # CVS decides modified-ness by comparing the Entries timestamp with the
+  # file mtime at whole-second granularity, so a copy landing in the same
+  # second as the checkout or the previous commit reads as unmodified and
+  # the next commit becomes a silent no-op.
+  st = os.stat(destfile)
+  os.utime(destfile, (st.st_atime + 2, st.st_mtime + 2))
 
 def file_compare(file1,file2):
   if(verbose): print("Compare "+file1+" -> "+file2)
