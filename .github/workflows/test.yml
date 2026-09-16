@@ -278,6 +278,19 @@ jobs:
           python regress.py --cvs ../Releasex64/cvs.exe --libdir ../Releasex64 2>&1 | tee regress.log
           test "${PIPESTATUS[0]}" -eq 0
 
+      # The exported tree is LF (git archive), but cvs on Windows checks text
+      # files out with CRLF and testcvs.py compares them byte for byte with
+      # the import source; locally core.autocrlf gives CRLF sources
+      - name: CRLF for the testcvs text fixtures
+        shell: pwsh
+        working-directory: src/${{ env.SRC }}/testcvs
+        run: |
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          Get-ChildItem -Recurse -File test_data | Where-Object Extension -ne '.gif' | ForEach-Object {
+            $text = [IO.File]::ReadAllText($_.FullName) -replace "`r?`n", "`r`n"
+            [IO.File]::WriteAllText($_.FullName, $text, $utf8)
+          }
+
       - name: testcvs.bat (cvs.exe on PATH, plugins next to it)
         shell: cmd
         working-directory: src/${{ env.SRC }}/testcvs
