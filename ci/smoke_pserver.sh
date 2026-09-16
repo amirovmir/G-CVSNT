@@ -27,6 +27,25 @@ step() { echo; echo "### $*"; }
 # text modulo CR; binaries byte for byte.
 cmp_text() { diff <(tr -d '\r' < "$1") <(tr -d '\r' < "$2") > /dev/null; }
 hash_tree() { (cd "$1" && find . -type f -not -path '*/CVS/*' | LC_ALL=C sort | xargs -r sha256sum); }
+# Every file under <source dir> must come back from <working copy> intact:
+# .txt modulo CR, everything else byte for byte. Two checkouts agreeing does
+# not prove that: an import path that stores a blob reference as file content
+# hands the same wrong bytes to every checkout (ci/repro_import_kB.sh).
+compare_with_source() {
+  local src="$1" wc="$2" f rel
+  while IFS= read -r f; do
+    rel=${f#"$src"/}
+    case "$rel" in
+      *.txt) cmp_text "$f" "$wc/$rel" || { echo "::error::$rel: text differs from the source"; exit 1; } ;;
+      *)     cmp "$f" "$wc/$rel" || { echo "::error::$rel: binary differs from the source ($(stat -c %s "$f") vs $(stat -c %s "$wc/$rel" 2>/dev/null || echo 0) bytes)"; exit 1; } ;;
+    esac
+  done < <(find "$src" -type f -not -path '*/CVS/*' | LC_ALL=C sort)
+  echo "    working copy equals the source: $src"
+}
+# <path> <total bytes>: two-byte binary header, then 'x' filler. Unambiguously
+# binary by content, so the client's automatic -kB on a .dat name is what gets
+# exercised; no cvswrappers entry is involved.
+mkbin() { { printf '\000\377'; head -c $(( $2 - 2 )) /dev/zero | tr '\0' 'x'; } > "$1"; }
 # After "update -dP" in wc2, both working copies must hold the same files with
 # the same content.
 sync_and_compare() {
@@ -39,7 +58,8 @@ sync_and_compare() {
 
 printf 'one\ntwo\n'            > imp/a.txt
 printf 'deep\n'                > imp/sub/deep/d.txt
-printf '\x00\x01\x02\xffbin\n' > imp/b.dat
+mkbin imp/b.dat 5000
+mkbin imp/sub/l.dat 200000
 
 step "version"
 "$CVS" -d "$ROOT" version
@@ -50,27 +70,18 @@ step "import"
 step "checkout, twice; the checkout must equal the import source"
 "$CVS" -d "$ROOT" checkout proj
 test -f proj/a.txt && test -f proj/sub/deep/d.txt
-# Two checkouts agreeing does not prove the import kept the data: an import
-# path that stores a blob reference as file content hands the same wrong
-# bytes to every checkout (plans/its-1098-harness/repro_import_kB.sh).
-cmp_text imp/a.txt proj/a.txt
-cmp_text imp/sub/deep/d.txt proj/sub/deep/d.txt
-cmp imp/b.dat proj/b.dat
+compare_with_source imp proj
 "$CVS" -d "$ROOT" checkout -d wc2 proj
 sync_and_compare "checkout"
 
-step "add + commit, update"
-printf 'added\n' > proj/c.txt
-(cd proj && "$CVS" add c.txt && "$CVS" commit -m "add one")
-sync_and_compare "add + commit"
-test -f wc2/c.txt
-
-step "add + commit of a binary (blob push through cafs_server), update"
-head -c 300000 /dev/urandom > proj/n.dat
-(cd proj && "$CVS" add -kb n.dat && "$CVS" commit -m "add binary")
-sync_and_compare "binary add + commit"
-cmp proj/n.dat wc2/n.dat
-cmp proj/b.dat wc2/b.dat
+step "mixed add of a text and a binary + commit (blob push through cafs_server), update"
+mkdir -p added
+printf 'added\n' > added/c.txt
+head -c 300000 /dev/urandom > added/n.dat
+cp added/c.txt added/n.dat proj/
+(cd proj && "$CVS" add c.txt && "$CVS" add -kb n.dat && "$CVS" commit -m "add text and binary")
+sync_and_compare "mixed add + commit"
+compare_with_source added wc2
 
 step "modify + commit, update"
 printf 'one\ntwo\nthree\n' > proj/a.txt
