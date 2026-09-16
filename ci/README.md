@@ -97,13 +97,16 @@ runs.
 `ROOT` can be overridden in the environment; the script takes the `cvs` binary and a work
 directory. It is not idempotent, the repository must be fresh.
 
-### `ci/repro_import_kB.sh` (known to fail)
+### The known import `-kB` defect
 
-Standalone reproduction of the `cvs import` data loss for `-kB` files: the server stores the
-79-byte session blob reference (or the raw text body for a server-forced kopt) as RCS text, so
-the checkout returns 79 bytes. `import.cpp` has no blob handling. The Linux job runs it after
-the smoke with `continue-on-error: true` and a `::warning::`; once `import.cpp` is fixed, drop
-both so it becomes a hard regression check.
+`cvs import` of a `-kB` file stores the 79-byte session blob reference (or the raw text body
+for a server-forced kopt) as RCS text, so the checkout returns 79 bytes; `import.cpp` has no
+blob handling (`Docs/cvsnt-import-kB-blob-reference-data-loss.md`). The smoke compares the first
+checkout with the import source in `known-import-defect` mode: mismatches there are
+`::warning::` annotations and the job stays green, while a mismatch after `add`/`commit` is
+still an error. `ci/repro_import_kB.sh` (standalone reproduction) then runs as a guard that
+**fails the job when the defect no longer reproduces**, with the instruction to remove the
+warning mode from `ci/smoke_pserver.sh`; the check cannot silently outlive the bug.
 
 ## Versioning
 

@@ -193,19 +193,18 @@ jobs:
 
       # Known defect (found 2026-09-16): `cvs import` of a -kB binary stores the
       # 79-byte blob reference as RCS text, import.cpp has no blob handling.
-      # Expected to FAIL until import.cpp is fixed; drop continue-on-error and
-      # the warning then, so the step becomes a hard regression check.
-      - name: "Regression check: import of -kB binaries (known to fail)"
-        id: import_kb
-        continue-on-error: true
+      # The smoke reports it as a warning (compare_with_source ... known-import-defect);
+      # this step keeps that mode honest: it FAILS the job as soon as the
+      # reproduction passes, i.e. when the defect is fixed and the warning
+      # mode in ci/smoke_pserver.sh must be removed.
+      - name: "Known defect check: import of -kB binaries must still reproduce"
         timeout-minutes: 5
         run: |
-          docker run --rm --network host --user 52:52 --tmpfs /work:uid=52,gid=52,size=1g \
-            -v "$PWD/ci:/ci:ro" -e HOME=/work \
-            cvsnt-test:"$VERSION" bash /ci/repro_import_kB.sh /usr/local/cvsnt/bin/cvs \
-            ":pserver:cvs:cvs@127.0.0.1:2401/cvs" /work/repro
-      - if: steps.import_kb.outcome == 'failure'
-        run: echo "::warning title=import -kB data loss::repro_import_kB.sh failed, the known import.cpp defect is still present"
+          if docker run --rm --network host --user 52:52 --tmpfs /work:uid=52,gid=52,size=1g               -v "$PWD/ci:/ci:ro" -e HOME=/work               cvsnt-test:"$VERSION" bash /ci/repro_import_kB.sh /usr/local/cvsnt/bin/cvs               ":pserver:cvs:cvs@127.0.0.1:2401/cvs" /work/repro; then
+            echo "::error title=import -kB data loss no longer reproduces::repro_import_kB.sh passed: import.cpp is fixed, remove the known-import-defect mode from ci/smoke_pserver.sh and make this step a plain regression check"
+            exit 1
+          fi
+          echo "::warning title=import -kB data loss (known defect, Docs/cvsnt-import-kB-blob-reference-data-loss.md)::repro_import_kB.sh still fails, the import.cpp defect is present"
 
       - name: Tear down (drops the repository volume)
         if: always()
