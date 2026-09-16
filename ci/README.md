@@ -162,13 +162,9 @@ In the workflows:
 - **No heavy-repository performance job.** The scenario uses small trees; a perf job needs a
   host with a copy of a large repository and a fixed baseline.
 - **`unit_tests` runs on Windows only**; there is no `Makefile.am` entry for it.
-- **`:ext:` client/server on Linux** is used by one regression case (`-ku`), and there the
-  server side crashes with SIGSEGV before the PR stack (it reproduces on `master`, see
-  `Docs/cvsnt-linux-server-build-pserver-deadlock.md` section 7). The Linux job runs
-  `check_suite_logs.sh` with `ALLOW_EXT_SIGSEGV=1`: exactly that one failure becomes a
-  `::warning::`, anything else stays red. The case is verified on Windows, where it passes.
-  Drop the variable from `test.yml` once the crash is fixed. The `:sserver:`/`:sspi:`
-  protocols are not tested.
+- **`:ext:` client/server on Linux** is used by one regression case; the `:sserver:`/`:sspi:`
+  protocols are not tested. The test containers run as uid 52 without a passwd entry, which
+  is what exposed the `getpwuid()` crash fixed in `cvstools/unix/GlobalSettings.cpp`.
 - **Packaging jobs in `release.yml`** (`deb`, `rpm`, `macos`) were written against packaging
   fixes on `ci-release` (`2328008..66423dd`, 11 files under `debian/`, `redhat/`, `osx/`) that
   this branch does not carry. They may fail until those commits are merged.

@@ -29,13 +29,7 @@ sleep 1
 
 echo "=== regress.py"
 python3.9 "$SRC/testcvs/regress.py" --cvs "$PREFIX/bin/cvs" --libdir "$PREFIX/lib/cvsnt" 2>&1 | tee regress.log
-regress_rc=${PIPESTATUS[0]}
-# with ALLOW_EXT_SIGSEGV=1 the known :ext: crash may be the one failure;
-# check_suite_logs.sh verifies that it is the only one, so the remaining
-# suites still run and report
-if [ "$regress_rc" -ne 0 ] && [ "${ALLOW_EXT_SIGSEGV:-}" != 1 ]; then
-  exit "$regress_rc"
-fi
+test "${PIPESTATUS[0]}" -eq 0
 
 echo "=== testcvs.py"
 rm -rf suite && cp -r "$SRC/testcvs" suite && cd suite
