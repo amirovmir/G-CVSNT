@@ -6490,7 +6490,9 @@ int cvs_output_raw(const char *str, size_t len, bool flush)
 /* Output LEN bytes at STR.  If LEN is zero, then output up to (not including)
    the first '\0' byte.  */
 #include <mutex>
-static std::mutex output_mutex;
+/* recursive: a signal handler (main_cleanup -> error -> cvs_flushout) may run
+   while the interrupted cvs_output still holds it */
+static std::recursive_mutex output_mutex;
 /* Bytes cvs_output has staged for the client since the last flush it
    issued itself; when it exceeds this threshold, the next completed
    line is pushed to the network.  */
@@ -6566,7 +6568,7 @@ int cvs_output (const char *str, size_t len)
 	else
 #endif
 	{
-      std::unique_lock<std::mutex> lock(output_mutex);
+      std::unique_lock<std::recursive_mutex> lock(output_mutex);
 #if defined(_WIN32) && !defined(CVS95)
 	// Convert the UTF8 string to Unicode/ANSI for console output
 		HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -6800,7 +6802,7 @@ int cvs_outerr (const char *str, size_t len)
 	else
 #endif
 	{
-        std::unique_lock<std::mutex> lock(output_mutex);
+        std::unique_lock<std::recursive_mutex> lock(output_mutex);
 #if defined(_WIN32) && !defined(CVS95)
 		// Convert the UTF8 string to Unicode/ANSI for console output
 		HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -6863,7 +6865,7 @@ cvs_flusherr ()
     else
 #endif
     {
-    std::unique_lock<std::mutex> lock(output_mutex);
+    std::unique_lock<std::recursive_mutex> lock(output_mutex);
 	fflush (stderr);
     }
 }
@@ -6887,7 +6889,7 @@ cvs_flushout ()
     else
 #endif
     {
-        std::unique_lock<std::mutex> lock(output_mutex);
+        std::unique_lock<std::recursive_mutex> lock(output_mutex);
 		fflush (stdout);
     }
 }
