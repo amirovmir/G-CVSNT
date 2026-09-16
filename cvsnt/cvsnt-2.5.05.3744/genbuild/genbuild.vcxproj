@@ -98,10 +98,13 @@
     <CodeAnalysisRules />
     <CodeAnalysisRuleAssemblies />
   </PropertyGroup>
+  <PropertyGroup>
+    <CustomBuildAfterTargets>Link</CustomBuildAfterTargets>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>"$(TargetPath)" $(SolutionDir)\build.h</Command>
+      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
       <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
@@ -124,7 +127,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>"$(TargetPath)" $(SolutionDir)\build.h</Command>
+      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
       <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
@@ -147,8 +150,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>"$(TargetPath)" $(SolutionDir)\build.h
-</Command>
+      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
       <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
@@ -170,8 +172,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>"$(TargetPath)" $(SolutionDir)\build.h
-</Command>
+      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
       <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
