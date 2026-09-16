@@ -206,7 +206,7 @@ jobs:
 
       - name: Tear down (drops the repository volume)
         if: always()
-        run: bash ci/contour/down.sh ${{ failure() && 'logs' || '' }}
+        run: bash ci/contour/down.sh ${{ job.status == 'failure' && 'logs' || '' }}
 
   # --------------------------------------------------------------------------
   windows-client:
