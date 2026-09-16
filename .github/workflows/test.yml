@@ -1,12 +1,16 @@
 name: test
 
-# Builds the tree and runs every suite on every pull request, and on demand
+# Builds the tree and runs every suite on every pull request and every push to a
+# ci/** branch, and on demand
 # for "base + these PRs": workflow_dispatch merges the listed PR heads onto
 # the base branch in order and tests the result. ci/README.md explains how to
 # use it from a fork.
 
 on:
   pull_request:
+  # a push to a ci/** branch tests that branch's own tree, like a pull request
+  push:
+    branches: ["ci/**"]
   workflow_dispatch:
     inputs:
       prs:
