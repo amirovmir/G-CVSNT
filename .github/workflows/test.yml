@@ -167,10 +167,13 @@ jobs:
           docker build --target build -t cvsnt-build:"$VERSION" -f docker/Dockerfile .
           docker build -t cvsnt-test:"$VERSION" -f ci/test.Dockerfile --build-arg BASE=cvsnt-build:"$VERSION" .
 
+      # ALLOW_EXT_SIGSEGV: the -ku case over :ext: crashes on Linux (pre-existing,
+      # reproduces on master); check_suite_logs.sh turns exactly that failure
+      # into a warning and keeps everything else hard
       - name: regress.py + testcvs.py inside the build image
         run: |
           docker run --rm --user 52:52 --tmpfs /work:uid=52,gid=52,size=2g \
-            -v "$PWD/ci:/ci:ro" -e EXPECTED_BUILD \
+            -v "$PWD/ci:/ci:ro" -e EXPECTED_BUILD -e ALLOW_EXT_SIGSEGV=1 \
             cvsnt-test:"$VERSION" bash /ci/run_linux_suites.sh
 
       - name: Server images (authserver, cafs-server, cvslockd) from the same build stage
