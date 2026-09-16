@@ -36,4 +36,4 @@ rm -rf suite && cp -r "$SRC/testcvs" suite && cd suite
 python3.9 testcvs.py 2>&1 | tee ../testcvs.log
 cd ..
 
-bash "$(dirname "$0")/check_suite_logs.sh" regress.log testcvs.log
+bash "$(dirname "$0")/check_suite_logs.sh" regress.log testcvs.log "$SRC/testcvs/regress.py"

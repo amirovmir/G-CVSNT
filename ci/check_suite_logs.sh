@@ -2,7 +2,10 @@
 # Assert that the suites ran to completion and that the cases behind the
 # open PRs actually executed instead of being skipped.
 #
-#   check_suite_logs.sh <regress.log> <testcvs.log>
+#   check_suite_logs.sh <regress.log> <testcvs.log> [regress.py]
+#
+# With regress.py given, a required case that this tree's regress.py does
+# not define (its PR is not part of the tree) is reported, not failed.
 #
 # regress.py prints "ok <name>" per passing test and a "<n> passed, <m> failed"
 # summary; the -ku case prints a "(skipped: ...)" note and still counts as ok
@@ -14,6 +17,7 @@
 set -u
 regress="$1"
 testcvs="$2"
+suite="${3:-}"
 rc=0
 
 fail() { echo "::error::$*"; rc=1; }
@@ -37,6 +41,10 @@ fi
 for t in "a -ku text file checks out with every line ending encoded" \
          "binary content is detected on add and import by content, not by name" \
          "binary file survives a commit/checkout round trip byte for byte"; do
+  if [ -n "$suite" ] && ! grep -F "@test(\"$t\")" "$suite" >/dev/null; then
+    echo "::notice::regress.py: '$t' is not defined in this tree, not required"
+    continue
+  fi
   grep -F "  ok    $t" "$regress" >/dev/null || fail "regress.py: '$t' did not pass"
 done
 
