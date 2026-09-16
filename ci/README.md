@@ -94,19 +94,34 @@ directory. It is not idempotent, the repository must be fresh.
 ## Versioning
 
 `cvs --version` prints `3.5.24 ... Build <n>`; `<n>` is `CVSNT_PRODUCT_BUILD` from `build.h`.
-`genbuild.exe` (Windows build only) rewrites `build.h` with
-`days_since_epoch(now) - 365*30`, so a Linux build reports whatever is committed, and two
-platforms built from one commit on different days disagree.
 
-`ci/build_number.py` reproduces the same formula from the **committer date of HEAD** instead
-of "now": deterministic per commit, identical on every platform, monotonic across commits made
-on different days.
+What the tree did before this branch, verified on a Windows build on 2026-09-16: the
+`genbuild` project's custom build step declared its output as `build.h.dummy`, a file nothing
+creates, so MSBuild considered the step out of date on **every** build and `genbuild.exe`
+rewrote `build.h` with `days_since_epoch(now) - 365*30` (the committed 9754 became 9762 that
+day). The Linux/autotools path never runs genbuild and reads `build.h` as committed. So a
+committed `build.h` pinned the Linux version only, and two platforms built from one commit on
+different days disagreed. genbuild also honours an override file `d:\forcebuild.txt`, but that
+is a hard-coded path on a drive a runner need not have, so it is not used here.
 
-- `test.yml`: the integrate job writes `build.h` into the exported tree; on Windows the same
-  number is pinned through `D:\forcebuild.txt`, which `genbuild.cpp` honours; both jobs assert
-  `cvs --version` reports it.
-- `release.yml`: the `version` job computes it once, every build job writes `build.h` (or
-  `forcebuild.txt`) from that output.
+Two changes make the number a property of the source tree:
+
+- `genbuild.vcxproj`: the command is now
+  `if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"`, so genbuild
+  writes the file only when it is missing; a committed `build.h` wins on every platform. To get
+  a fresh date-based number locally, delete `build.h` and build. The step also runs after
+  `Link` (`CustomBuildAfterTargets`), so it can no longer run before `genbuild.exe` exists or
+  race the parallel compile under `msbuild -m`.
+- `ci/build_number.py` reproduces the same formula from the **committer date of HEAD** instead
+  of "now": deterministic per commit, identical on every platform, monotonic across commits made
+  on different days.
+
+In the workflows:
+
+- `test.yml`: the integrate job writes `build.h` into the exported tree that both test jobs
+  build; both assert `cvs --version` reports that number.
+- `release.yml`: the `version` job computes it once, every build job writes `build.h` from that
+  output before building.
 - Names: artifacts and images are `3.5.24.<build>-<sha7>` (release images additionally carry
   `3.5.24.<build>` and `latest`, moved only after every job succeeded, as in the original).
 - The committed `build.h` still matters for anyone building from a plain clone. Bump it with
@@ -119,10 +134,10 @@ on different days.
   `--disable-avx512`. The test contour and the release images both use it.
 - `cvsnt/cvsnt-2.5.05.3744/longfilenames.xml`: the manifest `cvsnt.vcxproj` references but the
   repository never tracked; both earlier CI attempts generated it at build time.
-- `genbuild/genbuild.vcxproj`: `<CustomBuildAfterTargets>Link</CustomBuildAfterTargets>`. The
-  custom build step that runs `genbuild.exe` used to run before `Link`, so the first build on a
-  clean tree always failed and the second passed. `release.yml`'s `|| msbuild` retry existed
-  for this and is gone.
+- `genbuild/genbuild.vcxproj`: `<CustomBuildAfterTargets>Link</CustomBuildAfterTargets>`, and
+  the step only writes `build.h` when it is missing (see Versioning). The step used to run
+  before `Link`, so the first build on a clean tree always failed and the second passed;
+  `release.yml`'s `|| msbuild` retry existed for this and is gone.
 - `.gitattributes`: LF for `ci/`, `docker/`, `*.sh`, autotools inputs. A CRLF `configure.in`
   breaks `autoreconf`; a CRLF xinetd config makes xinetd load zero services silently.
 
@@ -145,8 +160,9 @@ Nothing below could be checked without a GitHub runner; each is asserted by the 
 wrong assumption fails loudly rather than silently.
 
 - `windows-2022`: `msbuild cvsnt.sln` for all 58 projects (Konstantin built only
-  `cvsnt.vcxproj` + `cafs_proxy.vcxproj`); the `D:` drive for `forcebuild.txt` (the workspace is
-  `D:\a\...` on GitHub-hosted Windows runners); `genbuild.rc` still needing to be blanked;
+  `cvsnt.vcxproj` + `cafs_proxy.vcxproj`); that `cmd`'s `if not exist` in the genbuild custom
+  step leaves the written `build.h` alone (asserted by the `Build <n>` check on `cvs.exe`);
+  `genbuild.rc` still needing to be blanked;
   `cvs.exe` finding `protocols/` and `triggers/` next to itself without `-L` (what `testcvs.bat`
   relies on); location of `zlib.lib`/`zstd.lib` for `unit_tests` (searched, not hard-coded).
 - `ubuntu-latest`: the default Docker builder sharing the `build` stage cache between the
