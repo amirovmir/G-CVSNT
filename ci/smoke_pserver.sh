@@ -111,9 +111,12 @@ test ! -f wc2/n.dat
 
 step "tag / log / status / history"
 (cd proj && "$CVS" tag SMOKE_TAG)
-(cd proj && "$CVS" log a.txt | head -3)
-(cd proj && "$CVS" status a.txt | head -3)
-"$CVS" -d "$ROOT" history -a -x MAR 2>&1 | head -3 || true
+# capture, then show: piping cvs into head closes its stdout early and the
+# client gets SIGPIPE mid-output
+(cd proj && "$CVS" log a.txt > ../log.out && head -3 ../log.out)
+(cd proj && "$CVS" status a.txt > ../status.out && head -3 ../status.out)
+"$CVS" -d "$ROOT" history -a -x MAR > history.out 2>&1 || true
+head -3 history.out
 
 step "checkout by tag"
 "$CVS" -d "$ROOT" checkout -d wc3 -r SMOKE_TAG proj
