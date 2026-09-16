@@ -88,8 +88,22 @@ commit → tag / log / status / history → checkout by tag → 400-file add + c
 ≥ 8 KiB output batching) → branch switch and back → an independent checkout equals the updated
 copy.
 
+After the import and after the mixed add, the working copy is also compared with the **source
+files** (`.txt` modulo CR, binaries byte for byte). Two checkouts agreeing proves nothing when
+the server stored the wrong bytes at import time. The imported binaries are 5000 and 200000
+bytes with a `\0\xff` header under `.dat` names, so the client's automatic `-kB` path is what
+runs.
+
 `ROOT` can be overridden in the environment; the script takes the `cvs` binary and a work
 directory. It is not idempotent, the repository must be fresh.
+
+### `ci/repro_import_kB.sh` (known to fail)
+
+Standalone reproduction of the `cvs import` data loss for `-kB` files: the server stores the
+79-byte session blob reference (or the raw text body for a server-forced kopt) as RCS text, so
+the checkout returns 79 bytes. `import.cpp` has no blob handling. The Linux job runs it after
+the smoke with `continue-on-error: true` and a `::warning::`; once `import.cpp` is fixed, drop
+both so it becomes a hard regression check.
 
 ## Versioning
 
