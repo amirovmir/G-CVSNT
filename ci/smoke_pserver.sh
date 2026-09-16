@@ -47,9 +47,15 @@ step "version"
 step "import"
 (cd imp && "$CVS" -d "$ROOT" import -m init proj VENDOR REL0)
 
-step "checkout, twice"
+step "checkout, twice; the checkout must equal the import source"
 "$CVS" -d "$ROOT" checkout proj
 test -f proj/a.txt && test -f proj/sub/deep/d.txt
+# Two checkouts agreeing does not prove the import kept the data: an import
+# path that stores a blob reference as file content hands the same wrong
+# bytes to every checkout (plans/its-1098-harness/repro_import_kB.sh).
+cmp_text imp/a.txt proj/a.txt
+cmp_text imp/sub/deep/d.txt proj/sub/deep/d.txt
+cmp imp/b.dat proj/b.dat
 "$CVS" -d "$ROOT" checkout -d wc2 proj
 sync_and_compare "checkout"
 
