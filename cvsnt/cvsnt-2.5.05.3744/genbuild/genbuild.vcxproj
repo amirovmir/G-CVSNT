@@ -104,8 +104,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
-      <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
+      <Command>if not exist "$(ProjectDir)..\build.h" "$(TargetPath)" $(ProjectDir)..\build.h</Command>
+      <Outputs>$(ProjectDir)..\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
       <Optimization>Disabled</Optimization>
@@ -127,8 +127,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
-      <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
+      <Command>if not exist "$(ProjectDir)..\build.h" "$(TargetPath)" $(ProjectDir)..\build.h</Command>
+      <Outputs>$(ProjectDir)..\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
       <Optimization>Disabled</Optimization>
@@ -150,8 +150,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
-      <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
+      <Command>if not exist "$(ProjectDir)..\build.h" "$(TargetPath)" $(ProjectDir)..\build.h</Command>
+      <Outputs>$(ProjectDir)..\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -172,8 +172,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <CustomBuildStep>
       <Message>Generating build number</Message>
-      <Command>if not exist "$(SolutionDir)build.h" "$(TargetPath)" "$(SolutionDir)build.h"</Command>
-      <Outputs>$(SolutionDir)\build.h.dummy;%(Outputs)</Outputs>
+      <Command>if not exist "$(ProjectDir)..\build.h" "$(TargetPath)" $(ProjectDir)..\build.h</Command>
+      <Outputs>$(ProjectDir)..\build.h.dummy;%(Outputs)</Outputs>
     </CustomBuildStep>
     <ClCompile>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
