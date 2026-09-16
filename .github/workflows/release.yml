@@ -259,9 +259,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: Pin the build number genbuild writes (genbuild.cpp reads d:\forcebuild.txt)
-        shell: cmd
-        run: echo ${{ needs.version.outputs.build }}> D:\forcebuild.txt
+      - name: Write build.h (genbuild only regenerates it when the file is missing)
+        shell: pwsh
+        working-directory: ${{ env.SRC }}
+        run: Set-Content -Path build.h -Value "#define CVSNT_PRODUCT_BUILD ${{ needs.version.outputs.build }}"
       - name: Repo-state workaround (genbuild.ico is rejected by current SDKs)
         shell: cmd
         working-directory: ${{ env.SRC }}

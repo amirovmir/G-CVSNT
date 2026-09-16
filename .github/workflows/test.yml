@@ -209,10 +209,8 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
-      - name: Pin the build number genbuild writes (genbuild.cpp reads d:\forcebuild.txt)
-        shell: cmd
-        run: echo %EXPECTED_BUILD%> D:\forcebuild.txt
-
+      # build.h in the exported tree carries the build number; genbuild only
+      # regenerates it when the file is missing (genbuild.vcxproj)
       - name: Repo-state workaround (genbuild.ico is rejected by current SDKs; from ci-release)
         shell: cmd
         working-directory: src/${{ env.SRC }}
