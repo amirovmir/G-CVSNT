@@ -31,16 +31,20 @@ hash_tree() { (cd "$1" && find . -type f -not -path '*/CVS/*' | LC_ALL=C sort | 
 # .txt modulo CR, everything else byte for byte. Two checkouts agreeing does
 # not prove that: an import path that stores a blob reference as file content
 # hands the same wrong bytes to every checkout (ci/repro_import_kB.sh).
+# A mismatch is recorded, not fatal: the rest of the scenario still runs and
+# the script exits 1 at the end, so one defect does not hide the others.
+SOURCE_MISMATCH=0
 compare_with_source() {
   local src="$1" wc="$2" f rel
   while IFS= read -r f; do
     rel=${f#"$src"/}
     case "$rel" in
-      *.txt) cmp_text "$f" "$wc/$rel" || { echo "::error::$rel: text differs from the source"; exit 1; } ;;
-      *)     cmp "$f" "$wc/$rel" || { echo "::error::$rel: binary differs from the source ($(stat -c %s "$f") vs $(stat -c %s "$wc/$rel" 2>/dev/null || echo 0) bytes)"; exit 1; } ;;
+      *.txt) cmp_text "$f" "$wc/$rel" || { echo "::error::$rel: text differs from the source"; SOURCE_MISMATCH=1; } ;;
+      *)     cmp "$f" "$wc/$rel" || { echo "::error::$rel: binary differs from the source ($(stat -c %s "$f") vs $(stat -c %s "$wc/$rel" 2>/dev/null || echo 0) bytes)"; SOURCE_MISMATCH=1; } ;;
     esac
   done < <(find "$src" -type f -not -path '*/CVS/*' | LC_ALL=C sort)
-  echo "    working copy equals the source: $src"
+  [ "$SOURCE_MISMATCH" -eq 0 ] && echo "    working copy equals the source: $src"
+  return 0
 }
 # <path> <total bytes>: two-byte binary header, then 'x' filler. Unambiguously
 # binary by content, so the client's automatic -kB on a .dat name is what gets
@@ -132,4 +136,8 @@ step "an independent checkout equals the updated working copy"
 diff <(hash_tree wc2) <(hash_tree wc4)
 
 echo
+if [ "$SOURCE_MISMATCH" -ne 0 ]; then
+  echo "### SMOKE FAILED: a working copy differed from the import/add source (see ::error:: above)"
+  exit 1
+fi
 echo "### SMOKE OK"
