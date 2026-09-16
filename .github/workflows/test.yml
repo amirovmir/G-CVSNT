@@ -196,11 +196,13 @@ jobs:
       # The smoke reports it as a warning (compare_with_source ... known-import-defect);
       # this step keeps that mode honest: it FAILS the job as soon as the
       # reproduction passes, i.e. when the defect is fixed and the warning
-      # mode in ci/smoke_pserver.sh must be removed.
+      # mode in ci/smoke_pserver.sh must be removed. -kB is passed explicitly
+      # so the guard tests import.cpp itself, not the client's binary
+      # auto-detection (PR #34), which a tree under test may not carry.
       - name: "Known defect check: import of -kB binaries must still reproduce"
         timeout-minutes: 5
         run: |
-          if docker run --rm --network host --user 52:52 --tmpfs /work:uid=52,gid=52,size=1g               -v "$PWD/ci:/ci:ro" -e HOME=/work               cvsnt-test:"$VERSION" bash /ci/repro_import_kB.sh /usr/local/cvsnt/bin/cvs               ":pserver:cvs:cvs@127.0.0.1:2401/cvs" /work/repro; then
+          if docker run --rm --network host --user 52:52 --tmpfs /work:uid=52,gid=52,size=1g               -v "$PWD/ci:/ci:ro" -e HOME=/work               cvsnt-test:"$VERSION" bash /ci/repro_import_kB.sh /usr/local/cvsnt/bin/cvs               ":pserver:cvs:cvs@127.0.0.1:2401/cvs" /work/repro -kB; then
             echo "::error title=import -kB data loss no longer reproduces::repro_import_kB.sh passed: import.cpp is fixed, remove the known-import-defect mode from ci/smoke_pserver.sh and make this step a plain regression check"
             exit 1
           fi
