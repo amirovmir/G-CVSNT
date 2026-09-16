@@ -304,7 +304,7 @@ jobs:
       - name: Every case executed, none skipped
         shell: bash
         working-directory: src/${{ env.SRC }}/testcvs
-        run: bash ../../../ci/check_suite_logs.sh regress.log testcvs.log
+        run: bash ../../../ci/check_suite_logs.sh regress.log testcvs.log regress.py
 
       - name: Pack the client
         shell: pwsh
