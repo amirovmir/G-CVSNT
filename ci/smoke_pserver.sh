@@ -16,6 +16,15 @@
 set -euo pipefail
 CVS="$1"
 W="$2"
+# every cvs call is bounded: a hung client fails the step with a message
+# instead of eating the runner until the job timeout
+CVS_TIMEOUT=${CVS_TIMEOUT:-120}
+cvs_cmd() {
+  timeout "$CVS_TIMEOUT" "$CVS" "$@"
+  local rc=$?
+  [ $rc -eq 124 ] && echo "::error::cvs $* hung for ${CVS_TIMEOUT}s and was killed"
+  return $rc
+}
 ROOT=${ROOT:-":pserver:cvs:cvs@127.0.0.1:2401/cvs"}
 
 rm -rf "$W"; mkdir -p "$W/imp/sub/deep"
@@ -53,7 +62,7 @@ mkbin() { { printf '\000\377'; head -c $(( $2 - 2 )) /dev/zero | tr '\0' 'x'; } 
 # After "update -dP" in wc2, both working copies must hold the same files with
 # the same content.
 sync_and_compare() {
-  (cd wc2 && "$CVS" -Q update -dP)
+  (cd wc2 && cvs_cmd -Q update -dP)
   if ! diff <(hash_tree proj) <(hash_tree wc2); then
     echo "::error::working copies differ after: $*"; exit 1
   fi
@@ -66,16 +75,16 @@ mkbin imp/b.dat 5000
 mkbin imp/sub/l.dat 200000
 
 step "version"
-"$CVS" -d "$ROOT" version
+cvs_cmd -d "$ROOT" version
 
 step "import"
-(cd imp && "$CVS" -d "$ROOT" import -m init proj VENDOR REL0)
+(cd imp && cvs_cmd -d "$ROOT" import -m init proj VENDOR REL0)
 
 step "checkout, twice; the checkout must equal the import source"
-"$CVS" -d "$ROOT" checkout proj
+cvs_cmd -d "$ROOT" checkout proj
 test -f proj/a.txt && test -f proj/sub/deep/d.txt
 compare_with_source imp proj
-"$CVS" -d "$ROOT" checkout -d wc2 proj
+cvs_cmd -d "$ROOT" checkout -d wc2 proj
 sync_and_compare "checkout"
 
 step "mixed add of a text and a binary + commit (blob push through cafs_server), update"
@@ -83,56 +92,56 @@ mkdir -p added
 printf 'added\n' > added/c.txt
 head -c 300000 /dev/urandom > added/n.dat
 cp added/c.txt added/n.dat proj/
-(cd proj && "$CVS" add c.txt && "$CVS" add -kb n.dat && "$CVS" commit -m "add text and binary")
+(cd proj && cvs_cmd add c.txt && cvs_cmd add -kb n.dat && cvs_cmd commit -m "add text and binary")
 sync_and_compare "mixed add + commit"
 compare_with_source added wc2
 
 step "modify + commit, update"
 printf 'one\ntwo\nthree\n' > proj/a.txt
-(cd proj && "$CVS" commit -m "modify a")
+(cd proj && cvs_cmd commit -m "modify a")
 sync_and_compare "modify + commit"
 cmp_text proj/a.txt wc2/a.txt
 
 step "second revision of the binary, update"
 head -c 200000 /dev/urandom > proj/n.dat
-(cd proj && "$CVS" commit -m "modify binary")
+(cd proj && cvs_cmd commit -m "modify binary")
 sync_and_compare "binary modify + commit"
 cmp proj/n.dat wc2/n.dat
 
 step "remove + commit, update"
-(cd proj && "$CVS" remove -f c.txt && "$CVS" commit -m "remove c")
+(cd proj && cvs_cmd remove -f c.txt && cvs_cmd commit -m "remove c")
 sync_and_compare "remove + commit"
 test ! -f wc2/c.txt
 
 step "remove of the binary + commit, update"
-(cd proj && "$CVS" remove -f n.dat && "$CVS" commit -m "remove binary")
+(cd proj && cvs_cmd remove -f n.dat && cvs_cmd commit -m "remove binary")
 sync_and_compare "binary remove + commit"
 test ! -f wc2/n.dat
 
 step "tag / log / status / history"
-(cd proj && "$CVS" tag SMOKE_TAG)
+(cd proj && cvs_cmd tag SMOKE_TAG)
 # capture, then show: piping cvs into head closes its stdout early and the
 # client gets SIGPIPE mid-output
-(cd proj && "$CVS" log a.txt > ../log.out && head -3 ../log.out)
-(cd proj && "$CVS" status a.txt > ../status.out && head -3 ../status.out)
-"$CVS" -d "$ROOT" history -a -x MAR > history.out 2>&1 || true
+(cd proj && cvs_cmd log a.txt > ../log.out && head -3 ../log.out)
+(cd proj && cvs_cmd status a.txt > ../status.out && head -3 ../status.out)
+cvs_cmd -d "$ROOT" history -a -x MAR > history.out 2>&1 || true
 head -3 history.out
 
 step "checkout by tag"
-"$CVS" -d "$ROOT" checkout -d wc3 -r SMOKE_TAG proj
+cvs_cmd -d "$ROOT" checkout -d wc3 -r SMOKE_TAG proj
 cmp_text proj/a.txt wc3/a.txt
 
 step "bulk add + commit of 400 files (>= 8 KiB output batching), update"
 for i in $(seq 1 400); do printf 'line %d\n' "$i" > "proj/f$i.txt"; done
-(cd proj && "$CVS" -Q add $(seq -f 'f%g.txt' 1 400) && "$CVS" -Q commit -m "bulk 400")
+(cd proj && cvs_cmd -Q add $(seq -f 'f%g.txt' 1 400) && cvs_cmd -Q commit -m "bulk 400")
 sync_and_compare "bulk add + commit"
 test "$(ls wc2/f*.txt | wc -l)" = "400"
 
 step "branch switch back and forth"
-"$CVS" -d "$ROOT" checkout -d wc4 proj
-(cd wc4 && "$CVS" update -dP -r SMOKE_TAG)
+cvs_cmd -d "$ROOT" checkout -d wc4 proj
+(cd wc4 && cvs_cmd update -dP -r SMOKE_TAG)
 test ! -f wc4/f1.txt
-(cd wc4 && "$CVS" update -dP -A)
+(cd wc4 && cvs_cmd update -dP -A)
 test -f wc4/f1.txt
 
 step "an independent checkout equals the updated working copy"

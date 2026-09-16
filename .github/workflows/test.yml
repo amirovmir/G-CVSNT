@@ -168,6 +168,7 @@ jobs:
           docker build -t cvsnt-test:"$VERSION" -f ci/test.Dockerfile --build-arg BASE=cvsnt-build:"$VERSION" .
 
       - name: regress.py + testcvs.py inside the build image
+        timeout-minutes: 30
         run: |
           docker run --rm --user 52:52 --tmpfs /work:uid=52,gid=52,size=2g \
             -v "$PWD/ci:/ci:ro" -e EXPECTED_BUILD \
@@ -184,6 +185,7 @@ jobs:
         run: bash ci/contour/up.sh "$RUNNER_TEMP/contour-conf"
 
       - name: "Smoke scenario through :pserver: (Linux client from the same build)"
+        timeout-minutes: 10
         run: |
           docker run --rm --network host --user 52:52 --tmpfs /work:uid=52,gid=52,size=1g \
             -v "$PWD/ci:/ci:ro" -e HOME=/work \
@@ -196,6 +198,7 @@ jobs:
       - name: "Regression check: import of -kB binaries (known to fail)"
         id: import_kb
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           docker run --rm --network host --user 52:52 --tmpfs /work:uid=52,gid=52,size=1g \
             -v "$PWD/ci:/ci:ro" -e HOME=/work \
