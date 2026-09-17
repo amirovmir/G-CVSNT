@@ -30,6 +30,7 @@ VERBOSE = False
 
 FAILURES = []
 PASSED = 0
+XFAILED = []
 CURRENT = "<none>"
 
 
@@ -138,6 +139,18 @@ class Repo:
 def test(name):
     def deco(fn):
         fn._test_name = name
+        return fn
+    return deco
+
+def xfail(name, reason):
+    """A test that pins a known-open defect: it is expected to fail today.
+    Reported XFAIL when it fails (no suite failure) and XPASS when it
+    unexpectedly passes - which means the defect is fixed and the marker
+    should come off.  An XPASS counts as a suite failure so it is not
+    missed."""
+    def deco(fn):
+        fn._test_name = name
+        fn._xfail = reason
         return fn
     return deco
 
@@ -273,6 +286,233 @@ def t_update_C_nobackup(r):
     check(not backups, "update -C -n left a backup: %r" % backups)
 
 
+def _merge_setup(r):
+    """Set up a repository where both merge producers can fire: rev 1.2 on
+    the trunk, a branch JBR with one commit on it (for -j joins), and the
+    first working copy left at its original revision with a non-conflicting
+    local edit, so that an update there has to merge.  Returns that copy."""
+    r.import_tree("m", {"a.txt": "line one\nline two\nline three\n"})
+    wc = r.checkout("m")
+    wc2root = os.path.join(r.root, "wc2")
+    os.makedirs(wc2root)
+    r.cvs(["checkout", "m"], cwd=wc2root)
+    wc2 = os.path.join(wc2root, "m")
+    write(os.path.join(wc2, "a.txt"), "line one\nline two\nthree changed\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc2)           # -> 1.2
+    r.cvs(["tag", "-b", "JBR"], cwd=wc2)
+    r.cvs(["update", "-r", "JBR"], cwd=wc2)
+    write(os.path.join(wc2, "a.txt"), "one branch\nline two\nthree changed\n")
+    r.cvs(["commit", "-m", "on branch"], cwd=wc2)        # -> 1.2.2.1
+    write(os.path.join(wc, "a.txt"), "one local\nline two\nline three\n")
+    return wc
+
+
+MERGED = "one local\nline two\nthree changed\n"
+JOINED = "one branch\nline two\nthree changed\n"
+
+
+def _join_wc(r, sub):
+    """A fresh trunk working copy for a -j join."""
+    root = os.path.join(r.root, sub)
+    os.makedirs(root)
+    r.cvs(["checkout", "m"], cwd=root)
+    return os.path.join(root, "m")
+
+
+@test("merging updates leave .# backups of the pre-merge files")
+def t_merge_backup_default(r):
+    wc = _merge_setup(r)
+    r.cvs(["update"], cwd=wc)
+    check_eq(read(os.path.join(wc, "a.txt")), MERGED, "merged content")
+    backups = [f for f in os.listdir(wc) if f.startswith(".#a.txt")]
+    check(backups, "merge left no .#a.txt backup")
+    if backups:
+        check_eq(read(os.path.join(wc, backups[0])),
+                 "one local\nline two\nline three\n", "backup content")
+
+    # A -j join backs up the pre-join file the same way.
+    wc3 = _join_wc(r, "wc3")
+    r.cvs(["update", "-j", "JBR", "a.txt"], cwd=wc3)
+    check_eq(read(os.path.join(wc3, "a.txt")), JOINED, "joined content")
+    backups = [f for f in os.listdir(wc3) if f.startswith(".#a.txt")]
+    check(backups, "join left no .#a.txt backup")
+
+
+@test("update -n / --no-backups merges without leaving .# backups")
+def t_merge_no_backup(r):
+    wc = _merge_setup(r)
+    r.cvs(["update", "-n"], cwd=wc)
+    check_eq(read(os.path.join(wc, "a.txt")), MERGED,
+             "merged content with -n")
+    backups = [f for f in os.listdir(wc) if f.startswith(".#")]
+    check(not backups, "update -n left backups: %r" % backups)
+
+    wc3 = _join_wc(r, "wc3")
+    r.cvs(["update", "--no-backups", "-j", "JBR", "a.txt"], cwd=wc3)
+    check_eq(read(os.path.join(wc3, "a.txt")), JOINED,
+             "joined content with --no-backups")
+    backups = [f for f in os.listdir(wc3) if f.startswith(".#")]
+    check(not backups, "update --no-backups left backups: %r" % backups)
+
+
+@test("update -n on a nonmergeable conflict installs the repository revision and keeps no copy")
+def t_no_backup_nonmergeable(r):
+    # The most destructive -n consequence, pinned: a -kb file with a local
+    # edit meets a newer repository revision.  A binary merge is a conflict
+    # by definition, so the repository revision replaces the local file,
+    # and the pre-merge copy that would have held the local edit is
+    # removed before the command returns - nothing names where it went.
+    payload1 = bytes(range(256)) * 2
+    payload2 = bytes(reversed(range(256))) * 3
+    local = b"local edit " * 40
+    imp = os.path.join(r.root, "impbin")
+    os.makedirs(imp)
+    with open(os.path.join(imp, "b.dat"), "wb") as f:
+        f.write(payload1)
+    r.cvs(["import", "-m", "bin", "-kb", "mb", "VENDOR", "REL0"], cwd=imp)
+    wc = r.checkout("mb")
+    wc2root = os.path.join(r.root, "wc2")
+    os.makedirs(wc2root)
+    r.cvs(["checkout", "mb"], cwd=wc2root)
+    wc2 = os.path.join(wc2root, "mb")
+    with open(os.path.join(wc2, "b.dat"), "wb") as f:
+        f.write(payload2)
+    r.cvs(["commit", "-m", "second"], cwd=wc2)
+    with open(os.path.join(wc, "b.dat"), "wb") as f:
+        f.write(local)
+
+    rc, out = r.cvs(["update", "-n"], cwd=wc, expect_ok=False)
+    check("nonmergeable file needs merge" in out,
+          "update -n did not report the nonmergeable conflict:" + chr(10) + out)
+    check("file from working directory is now in" not in out,
+          "update -n named a copy it does not keep:" + chr(10) + out)
+    # The local edit is discarded either way; do not assert the exact
+    # repository bytes here - a small -kB revision checks out empty under
+    # the residual BUG-blob-21 defect (see t_binary_small_second_commit).
+    check(open(os.path.join(wc, "b.dat"), "rb").read() != local,
+          "update -n kept the local edit on a nonmergeable conflict")
+    backups = [f for f in os.listdir(wc) if f.startswith(".#")]
+    check(not backups, "update -n left a pre-merge copy: %r" % backups)
+
+
+def _in_the_way_setup(r):
+    """Commit a new file b.txt from a second working copy and obstruct its
+    path in the first working copy with an unversioned file.  Returns the
+    first working copy."""
+    r.import_tree("m", {"a.txt": "aaa\n"})
+    wc = r.checkout("m")
+    wc2root = os.path.join(r.root, "wc2")
+    os.makedirs(wc2root)
+    r.cvs(["checkout", "m"], cwd=wc2root)
+    wc2 = os.path.join(wc2root, "m")
+    write(os.path.join(wc2, "b.txt"), "repo version\n")
+    r.cvs(["add", "b.txt"], cwd=wc2)
+    r.cvs(["commit", "-m", "add b"], cwd=wc2)
+    write(os.path.join(wc, "b.txt"), "local stuff\n")
+    return wc
+
+
+@test("an unversioned file in the way blocks the update, run after run")
+def t_in_the_way_default(r):
+    wc = _in_the_way_setup(r)
+    for attempt in ("first", "second"):
+        rc, out = r.cvs(["update"], cwd=wc, expect_ok=False)
+        check(rc != 0, "%s update with an obstruction exited 0" % attempt)
+        check("move away b.txt; it is in the way" in out,
+              "%s update lacks the move-away message:\n%s" % (attempt, out))
+        check_eq(read(os.path.join(wc, "b.txt")), "local stuff\n",
+                 "obstructing file content after %s update" % attempt)
+        check(not [f for f in os.listdir(wc) if f.startswith(".#")],
+              "update without the option created .# files")
+
+
+@test("update --move-in-the-way renames the obstruction and converges")
+def t_in_the_way_moved(r):
+    wc = _in_the_way_setup(r)
+    rc, out = r.cvs(["update", "--move-in-the-way"], cwd=wc, expect_ok=False)
+    check_eq(rc, 0, "update --move-in-the-way exit status:\n" + out)
+    check("move away" not in out, "still asks to move away:\n" + out)
+    check_eq(read(os.path.join(wc, "b.txt")), "repo version\n",
+             "b.txt content after recovery")
+    aside = [f for f in os.listdir(wc) if f.startswith(".#b.txt.notversioned.")]
+    check_eq(len(aside), 1, "aside backups: %r" % aside)
+    if aside:
+        check_eq(read(os.path.join(wc, aside[0])), "local stuff\n",
+                 "aside backup content")
+    rc, out = r.cvs(["update"], cwd=wc, expect_ok=False)
+    check_eq(rc, 0, "plain update after recovery is not clean:\n" + out)
+
+    # checkout into a pre-populated directory shares the option.
+    wc3root = os.path.join(r.root, "wc3")
+    os.makedirs(os.path.join(wc3root, "m"))
+    write(os.path.join(wc3root, "m", "b.txt"), "other local\n")
+    rc, out = r.cvs(["checkout", "--move-in-the-way", "m"], cwd=wc3root,
+                    expect_ok=False)
+    check_eq(rc, 0, "checkout --move-in-the-way exit status:\n" + out)
+    check_eq(read(os.path.join(wc3root, "m", "b.txt")), "repo version\n",
+             "b.txt content after checkout recovery")
+    aside = [f for f in os.listdir(os.path.join(wc3root, "m"))
+             if f.startswith(".#b.txt.notversioned.")]
+    check_eq(len(aside), 1, "checkout aside backups: %r" % aside)
+
+
+@test("a missing CVS/Entries aborts the whole update")
+def t_missing_entries_default(r):
+    r.import_tree("m", {"a.txt": "aaa\n", "sub/b.txt": "bbb\n",
+                        "sub/nested/d.txt": "ddd\n"})
+    wc = r.checkout("m")
+    os.remove(os.path.join(wc, "sub", "CVS", "Entries"))
+    rc, out = r.cvs(["update"], cwd=wc, expect_ok=False)
+    check(rc != 0, "update with a missing Entries exited 0")
+    check("CVS/Entries is missing" in out,
+          "missing-Entries message absent:\n" + out)
+    check(not os.path.exists(os.path.join(wc, "sub", "CVS", "Entries")),
+          "update recreated Entries without being asked to")
+
+
+@test("update --recreate-entries repairs a missing CVS/Entries")
+def t_missing_entries_recreated(r):
+    r.import_tree("m", {"a.txt": "aaa\n", "sub/b.txt": "bbb\n",
+                        "sub/nested/d.txt": "ddd\n"})
+    wc = r.checkout("m")
+    os.remove(os.path.join(wc, "sub", "CVS", "Entries"))
+    rc, out = r.cvs(["update", "--recreate-entries"], cwd=wc, expect_ok=False)
+    check_eq(rc, 0, "update --recreate-entries exit status:\n" + out)
+    check("recreated missing" in out, "no recreation notice:\n" + out)
+    ents = entries_of(os.path.join(wc, "sub"))
+    check("b.txt" in ents, "b.txt not re-registered: %r" % ents)
+    check("nested" in ents, "nested/ lost from the recreated Entries: %r" % ents)
+    check_eq(read(os.path.join(wc, "sub", "b.txt")), "bbb\n", "b.txt content")
+    check_eq(read(os.path.join(wc, "sub", "nested", "d.txt")), "ddd\n",
+             "nested/d.txt content")
+    rc, out = r.cvs(["update"], cwd=wc, expect_ok=False)
+    check_eq(rc, 0, "plain update after the repair is not clean:\n" + out)
+
+
+@test("--rename-in-use is accepted globally and inert when nothing is locked")
+def t_rename_in_use_inert(r):
+    # The recovery branch itself (destination in use when the temp file is
+    # renamed over it) is reachable only through the client/server
+    # update_entries path with a running image holding the file: a local
+    # update -C renames the old file aside first, and a mapping held by a
+    # plain file handle blocks that rename too, so it cannot be driven from
+    # this local-mode suite.  A real test needs the piped-server harness
+    # and a spawned executable; recorded as open.  Here we pin that the
+    # global switch parses and is a no-op on the ordinary path.
+    r.import_tree("m", {"a.txt": "one\n"})
+    wc = r.checkout("m")
+    write(os.path.join(wc, "a.txt"), "one\ntwo\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)
+    write(os.path.join(wc, "a.txt"), "local\n")
+    rc, out = run(["--rename-in-use", "-d", r.repo, "update", "-C"], cwd=wc,
+                  expect_ok=False)
+    check_eq(rc, 0, "update -C with --rename-in-use exit status:\n" + out)
+    check_eq(read(os.path.join(wc, "a.txt")), "one\ntwo\n",
+             "content after update -C with the switch")
+    check(not [f for f in os.listdir(wc) if ".inuse." in f],
+          "the switch created an inuse aside with nothing locked")
+
+
 @test("update -d picks up a directory added after checkout")
 def t_update_d(r):
     r.import_tree("m", {"a.txt": "one\n"})
@@ -330,6 +570,567 @@ def t_binary(r):
     check_eq(got, payload2, "binary commit/checkout round trip")
 
 
+@test("second commit of a binary file round trips byte for byte")
+def t_binary_second_commit(r):
+    # Import only exercises the inline-storage path; a *commit* goes through
+    # RCS_checkin, which routes binary content into the content-addressed
+    # blob store.  In local mode that store's root must resolve to the
+    # repository - not the process working directory - and must work in a
+    # repository that has no blobs/ directory yet, or the second revision of
+    # every binary file either aborts or is silently lost.
+    payload1 = bytes(range(256)) * 4
+    payload2 = bytes(reversed(range(256))) * 6 + b"\x00tail"
+    imp = os.path.join(r.root, "impbin")
+    os.makedirs(imp)
+    with open(os.path.join(imp, "b.dat"), "wb") as f:
+        f.write(payload1)
+    r.cvs(["import", "-m", "bin", "-kb", "mb", "VENDOR", "REL0"], cwd=imp)
+    wc = r.checkout("mb")
+
+    with open(os.path.join(wc, "b.dat"), "wb") as f:
+        f.write(payload2)
+    _, out = r.cvs(["commit", "-m", "second"], cwd=wc)
+    check("new revision" in out, "second binary commit did not succeed:\n" + out)
+
+    # The blob must not have been sprayed into the working copy.
+    check(not os.path.isdir(os.path.join(wc, "blobs")),
+          "commit created a blobs/ directory inside the working copy")
+
+    # A fresh checkout elsewhere must reproduce the committed bytes exactly.
+    wc2root = os.path.join(r.root, "wc2")
+    os.makedirs(wc2root)
+    r.cvs(["checkout", "mb"], cwd=wc2root)
+    got = open(os.path.join(wc2root, "mb", "b.dat"), "rb").read()
+    check_eq(len(got), len(payload2), "second-revision size after fresh checkout")
+    check_eq(got, payload2, "second-revision content after fresh checkout")
+
+    # And the first revision must still be reachable.
+    r.cvs(["update", "-r", "1.1.1.1", "b.dat"], cwd=os.path.join(wc2root, "mb"))
+    got = open(os.path.join(wc2root, "mb", "b.dat"), "rb").read()
+    check_eq(got, payload1, "first-revision content via update -r")
+
+
+@test("interrupted checkout leaves well-formed Entries logs")
+def t_entries_log_format(r):
+    # A checkout that dies mid-directory (here: on a corrupt ,v) leaves
+    # CVS/Entries.Log and CVS/Entries.Extra.Log behind for the next command
+    # to replay.  Every record in them must be complete: a command prefix
+    # ("A " / "R ") is optional, but a prefix with no record after it is
+    # corruption.  Replaying the surviving log must yield exactly the files
+    # that were checked out before the failure.
+    r.import_tree("m", {"a.txt": "one\n", "b.txt": "two\n", "z.txt": "three\n"})
+    zv = os.path.join(r.repo, "m", "z.txt,v")
+    os.chmod(zv, 0o644)                 # ,v files are checked in read-only
+    with open(zv, "w") as f:
+        f.write("this is not an rcs file\n")
+    wcroot = os.path.join(r.root, "wcbad")
+    os.makedirs(wcroot)
+    rc, out = r.cvs(["checkout", "m"], cwd=wcroot, expect_ok=False)
+    check(rc != 0, "checkout of a corrupt ,v unexpectedly succeeded")
+    wc = os.path.join(wcroot, "m")
+    check(os.path.isfile(os.path.join(wc, "a.txt")), "a.txt missing after partial checkout")
+    check(os.path.isfile(os.path.join(wc, "b.txt")), "b.txt missing after partial checkout")
+    for fn in ("Entries.Log", "Entries.Extra.Log"):
+        p = os.path.join(wc, "CVS", fn)
+        if not os.path.exists(p):
+            continue
+        for line in read(p).splitlines():
+            if not line.strip():
+                continue
+            body = line
+            if len(line) >= 2 and line[1] == " " and line[0] in "AR":
+                body = line[2:]
+            check(body.startswith("/") or body.startswith("D/"),
+                  "%s has a malformed record: %r" % (fn, line))
+    ents = entries_of(wc)
+    check_eq(sorted(ents), ["a.txt", "b.txt"], "entries after interrupted checkout")
+
+
+@test("rtag, tag -F and tag -d update the symbol table correctly")
+def t_tag_move_delete(r):
+    r.import_tree("m", {"a.txt": "one\n", "sub/b.txt": "two\n"})
+    wc = r.checkout("m")
+    r.cvs(["tag", "T1"], cwd=wc)                       # T1 -> 1.1
+    write(os.path.join(wc, "a.txt"), "one\ntwo\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)          # a.txt -> 1.2
+    r.cvs(["tag", "-F", "T1"], cwd=wc)                 # move T1 -> 1.2
+    r.cvs(["rtag", "-r", "T1", "R1", "m"])             # R1 -> wherever T1 is
+    r.cvs(["rtag", "-b", "BR2", "m"])                  # branch tag off head
+
+    _, out = r.cvs(["log", "a.txt"], cwd=wc)
+    for tag, pat in (("T1", r"^1\.2$"), ("R1", r"^1\.2$"), ("BR2", r"^1\.2\.0\.\d+$")):
+        m = re.search(r"^\t%s:\s*(\S+)$" % tag, out, re.M)
+        check(m is not None, "%s missing from symbolic names:\n%s" % (tag, out))
+        if m:
+            check(re.match(pat, m.group(1)) is not None,
+                  "%s points at %r, expected %r" % (tag, m.group(1), pat))
+
+    r.cvs(["tag", "-d", "T1"], cwd=wc)                 # delete via tag
+    r.cvs(["rtag", "-d", "R1", "m"])                   # delete via rtag
+    _, out = r.cvs(["log", "a.txt"], cwd=wc)
+    check(re.search(r"^\tT1:", out, re.M) is None, "T1 still present after tag -d:\n" + out)
+    check(re.search(r"^\tR1:", out, re.M) is None, "R1 still present after rtag -d:\n" + out)
+    check(re.search(r"^\tBR2:", out, re.M) is not None, "BR2 lost by the deletes:\n" + out)
+
+    # The rewritten ,v files must still be fully usable afterwards.
+    write(os.path.join(wc, "a.txt"), "one\ntwo\nthree\n")
+    _, out = r.cvs(["commit", "-m", "third"], cwd=wc)
+    check("new revision: 1.3" in out, "commit after tagging did not produce 1.3:\n" + out)
+    r.cvs(["update", "-r", "BR2"], cwd=wc)
+    check_eq(read(os.path.join(wc, "a.txt")), "one\ntwo\n", "content on branch BR2")
+    r.cvs(["update", "-A"], cwd=wc)
+    check_eq(read(os.path.join(wc, "a.txt")), "one\ntwo\nthree\n", "content back on head")
+
+
+@test("text file bigger than the RCS parse buffer round trips")
+def t_large_text(r):
+    # ~205 KiB, which crosses several 64 KiB RCSBUF_BUFSIZE boundaries in
+    # rcsbuf_fill and exercises the buffered delta walk; the @s exercise RCS
+    # @-escaping.  See t_huge_text for the regime past MAX_INCR.
+    payload = "".join("line %05d %s @@ at@sign\n" % (i, "x" * (i % 60))
+                      for i in range(4000))
+    r.import_tree("m", {"big.txt": payload})
+    wc = r.checkout("m")
+    check_eq(read(os.path.join(wc, "big.txt")), payload, "content after first checkout")
+
+    write(os.path.join(wc, "big.txt"), payload + "tail\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)
+
+    r.cvs(["update", "-r", "1.1", "big.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "big.txt")), payload, "content of revision 1.1")
+    r.cvs(["update", "-A", "big.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "big.txt")), payload + "tail\n", "content of head")
+
+    wc2root = os.path.join(r.root, "wc2")
+    os.makedirs(wc2root)
+    r.cvs(["checkout", "m"], cwd=wc2root)
+    check_eq(read(os.path.join(wc2root, "m", "big.txt")), payload + "tail\n",
+             "content after second checkout")
+
+
+@test("empty file round trips")
+def t_empty_file(r):
+    # Exercises the st_size == 0 branch of the RCS parse-buffer pre-size,
+    # which is skipped and must fall back to incremental growth.
+    r.import_tree("m", {"empty.txt": "", "a.txt": "one\n"})
+    wc = r.checkout("m")
+    check(os.path.isfile(os.path.join(wc, "empty.txt")), "empty.txt not checked out")
+    check_eq(read(os.path.join(wc, "empty.txt")), "", "empty file content")
+    write(os.path.join(wc, "empty.txt"), "now has content\n")
+    r.cvs(["commit", "-m", "fill it"], cwd=wc)
+    r.cvs(["update", "-r", "1.1", "empty.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "empty.txt")), "", "empty file at revision 1.1")
+
+
+@test("text file past the RCS buffer growth threshold round trips")
+def t_huge_text(r):
+    # The parse-buffer pre-size exists for ,v files past MAX_INCR (2 MiB),
+    # where expand_string stops doubling and grows by a constant instead.  The
+    # 205 KiB case above never leaves the geometric regime, so it cannot show a
+    # regression in the path the optimization actually targets.  ~3 MiB puts
+    # the ,v above MAX_INCR and below the 8 MiB pre-size cap.
+    line = "the quick brown fox jumps over the lazy dog 0123456789 @@\n"
+    payload = line * (3 * 1024 * 1024 // len(line))
+    r.import_tree("m", {"huge.txt": payload})
+    wc = r.checkout("m")
+    check_eq(len(read(os.path.join(wc, "huge.txt"))), len(payload), "huge file size")
+    check_eq(read(os.path.join(wc, "huge.txt")), payload, "huge file content")
+
+    write(os.path.join(wc, "huge.txt"), payload + "tail\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)
+    r.cvs(["update", "-r", "1.1", "huge.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "huge.txt")), payload, "huge file at revision 1.1")
+    r.cvs(["update", "-A", "huge.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "huge.txt")), payload + "tail\n", "huge file at head")
+
+    # Tagging rewrites the whole ,v, which is the RCS_copydeltas path.
+    r.cvs(["tag", "REL1"], cwd=wc)
+    r.cvs(["update", "-r", "REL1", "huge.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "huge.txt")), payload + "tail\n",
+             "huge file content at REL1 after the ,v was rewritten")
+
+
+@test("a ,v present in both the repository and the Attic is listed once")
+def t_attic_duplicate(r):
+    r.import_tree("m", {"a.txt": "one\n", "b.txt": "two\n"})
+    attic = os.path.join(r.repo, "m", "Attic")
+    os.makedirs(attic, exist_ok=True)
+    shutil.copyfile(os.path.join(r.repo, "m", "a.txt,v"),
+                    os.path.join(attic, "a.txt,v"))
+    wc = r.checkout("m")
+    check_eq(read(os.path.join(wc, "a.txt")), "one\n", "a.txt content")
+    ents = entries_of(wc)
+    check_eq(sorted(ents), ["a.txt", "b.txt"], "entries with an Attic duplicate")
+    # An update in the working copy walks Entries plus repository plus Attic;
+    # the duplicate name must still collapse to a single entry.
+    _, out = r.cvs(["update"], cwd=wc)
+    ents = entries_of(wc)
+    check_eq(sorted(ents), ["a.txt", "b.txt"], "entries after update")
+
+
+def branch_num(r, wc, fname, tag):
+    """Return the magic branch revision the symbol TAG carries for FNAME."""
+    _, out = r.cvs(["log", fname], cwd=wc)
+    m = re.search(r"^\t%s:\s*(\S+)$" % re.escape(tag), out, re.M)
+    if not check(m is not None, "%s missing from symbolic names:\n%s" % (tag, out)):
+        return None
+    return m.group(1)
+
+
+@test("branch numbers are assigned in order and nest correctly")
+def t_branch_numbers_multi(r):
+    # Sequential branches must get the even magic numbers 2, 4, 6: with no
+    # deletions both the scan-from-2 loop and a highest-plus-2 assignment
+    # agree, so these are exact.
+    r.import_tree("m", {"a.txt": "one\n"})
+    wc = r.checkout("m")
+    write(os.path.join(wc, "a.txt"), "one\ntwo\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)          # -> 1.2
+    for tag, num in (("BR1", 2), ("BR2", 4), ("BR3", 6)):
+        r.cvs(["tag", "-b", tag], cwd=wc)
+        check_eq(branch_num(r, wc, "a.txt", tag), "1.2.0.%d" % num,
+                 "%s branch number" % tag)
+
+    # A commit on BR1 turns the magic branch into the physical branch 1.2.2.
+    r.cvs(["update", "-r", "BR1"], cwd=wc)
+    write(os.path.join(wc, "a.txt"), "one\ntwo\nbr1\n")
+    _, out = r.cvs(["commit", "-m", "on br1"], cwd=wc)
+    check("1.2.2.1" in out, "commit on BR1 did not create 1.2.2.1:\n" + out)
+
+    # A branch off that branch revision starts its own magic numbering at 2.
+    r.cvs(["tag", "-b", "SUB1"], cwd=wc)
+    check_eq(branch_num(r, wc, "a.txt", "SUB1"), "1.2.2.1.0.2",
+             "SUB1 branch-off-branch number")
+
+    # Everything must still be usable afterwards.
+    r.cvs(["update", "-A"], cwd=wc)
+    check_eq(read(os.path.join(wc, "a.txt")), "one\ntwo\n", "content at head")
+    r.cvs(["update", "-r", "BR1"], cwd=wc)
+    check_eq(read(os.path.join(wc, "a.txt")), "one\ntwo\nbr1\n", "content on BR1")
+    r.cvs(["update", "-A"], cwd=wc)
+
+
+@test("a branch created after deleting an unused branch stays unique")
+def t_branch_after_delete_uncommitted(r):
+    # Deleting BR2 (never committed on) frees magic number 4.  Whether a new
+    # branch reuses the freed number or takes a fresh one is an implementation
+    # choice; what must hold is that the new number is even, well-formed and
+    # different from every live branch, and that the branch works.
+    r.import_tree("m", {"a.txt": "one\n"})
+    wc = r.checkout("m")
+    write(os.path.join(wc, "a.txt"), "one\ntwo\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)          # -> 1.2
+    for tag in ("BR1", "BR2", "BR3"):
+        r.cvs(["tag", "-b", tag], cwd=wc)
+    r.cvs(["tag", "-d", "-B", "BR2"], cwd=wc)
+
+    r.cvs(["tag", "-b", "BR4"], cwd=wc)
+    num = branch_num(r, wc, "a.txt", "BR4")
+    if num:
+        m = re.match(r"^1\.2\.0\.(\d+)$", num)
+        check(m is not None, "BR4 is not a magic branch off 1.2: %r" % num)
+        if m:
+            n = int(m.group(1))
+            check(n % 2 == 0, "BR4 branch number %d is odd" % n)
+            check(n not in (2, 6), "BR4 number %d collides with BR1/BR3" % n)
+
+    # The branch must accept a commit that lands on its own branch number.
+    r.cvs(["update", "-r", "BR4"], cwd=wc)
+    write(os.path.join(wc, "a.txt"), "one\ntwo\nbr4\n")
+    _, out = r.cvs(["commit", "-m", "on br4"], cwd=wc)
+    if num:
+        branchrev = num.replace(".0.", ".", 1) + ".1"
+        check(branchrev in out,
+              "commit on BR4 did not create %s:\n%s" % (branchrev, out))
+    r.cvs(["update", "-A"], cwd=wc)
+    check_eq(read(os.path.join(wc, "a.txt")), "one\ntwo\n", "content at head")
+
+
+@test("a deleted branch with commits still blocks its branch number")
+def t_branch_after_delete_committed(r):
+    # BR1 gets 1.2.0.2 and a commit creates the physical branch 1.2.2.
+    # Deleting the tag afterwards removes the symbol but not the branch, so
+    # the next branch must skip number 2 and take 1.2.0.4: candidates are
+    # validated against the delta tree, not just the symbol table.
+    r.import_tree("m", {"a.txt": "one\n"})
+    wc = r.checkout("m")
+    write(os.path.join(wc, "a.txt"), "one\ntwo\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)          # -> 1.2
+    r.cvs(["tag", "-b", "BR1"], cwd=wc)
+    check_eq(branch_num(r, wc, "a.txt", "BR1"), "1.2.0.2", "BR1 branch number")
+    r.cvs(["update", "-r", "BR1"], cwd=wc)
+    write(os.path.join(wc, "a.txt"), "one\ntwo\nbr1\n")
+    r.cvs(["commit", "-m", "on br1"], cwd=wc)          # -> 1.2.2.1
+    r.cvs(["update", "-A"], cwd=wc)
+    r.cvs(["tag", "-d", "-B", "BR1"], cwd=wc)
+
+    r.cvs(["tag", "-b", "BRX"], cwd=wc)
+    check_eq(branch_num(r, wc, "a.txt", "BRX"), "1.2.0.4",
+             "BRX must skip the committed branch 1.2.2")
+
+
+@test("adding a new file writes a fully usable ,v")
+def t_new_file_add_commit(r):
+    # cvs add + commit of a brand-new file takes the write-a-fresh-,v path in
+    # RCS_checkin (not RCS_rewrite).  The file must then survive the normal
+    # rewrite paths: a second commit, a branch tag, and a branch commit.
+    r.import_tree("m", {"a.txt": "one\n"})
+    wc = r.checkout("m")
+    payload = "".join("new file line %04d @@ at@\n" % i for i in range(200))
+    write(os.path.join(wc, "n.txt"), payload)
+    r.cvs(["add", "n.txt"], cwd=wc)
+    _, out = r.cvs(["commit", "-m", "add n"], cwd=wc)
+
+    wc2root = os.path.join(r.root, "wc2")
+    os.makedirs(wc2root)
+    r.cvs(["checkout", "m"], cwd=wc2root)
+    check_eq(read(os.path.join(wc2root, "m", "n.txt")), payload,
+             "new file content after fresh checkout")
+
+    write(os.path.join(wc, "n.txt"), payload + "second\n")
+    r.cvs(["commit", "-m", "second"], cwd=wc)
+    r.cvs(["tag", "-b", "NBR"], cwd=wc)
+    r.cvs(["update", "-r", "NBR", "n.txt"], cwd=wc)
+    write(os.path.join(wc, "n.txt"), payload + "second\nbranch\n")
+    r.cvs(["commit", "-m", "on branch"], cwd=wc)
+    r.cvs(["update", "-A", "n.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "n.txt")), payload + "second\n",
+             "new file content at head after branch commit")
+    r.cvs(["update", "-r", "1.1", "n.txt"], cwd=wc)
+    check_eq(read(os.path.join(wc, "n.txt")), payload, "new file revision 1.1")
+    r.cvs(["update", "-A", "n.txt"], cwd=wc)
+
+
+@test("a piped server session completes several commands without stalling")
+def t_server_session(r):
+    # Drive `cvs server` through its stdin/stdout protocol the way a network
+    # client would: one session issuing valid-requests, a checkout, a noop and
+    # an rlog.  Pins (a) request dispatch, (b) that every command's output is
+    # flushed to the client by the time its terminating "ok" arrives, and
+    # (c) that the session never deadlocks waiting for a flush.
+    r.import_tree("m", {"a.txt": "one\n", "sub/b.txt": "sub content\n"})
+    root = r.repo.replace(os.sep, "/")
+
+    valid_responses = (
+        "ok error Valid-requests Checked-in New-entry Checksum Copy-file "
+        "Blob-ref Blob-ref-created Blob-OTP Blob-url "
+        "Updated Created Update-existing Merged Patched Rcs-diff Mode "
+        "Mod-time Removed Remove-entry Set-static-directory "
+        "Clear-static-directory Set-sticky Clear-sticky Template "
+        "Notified Module-expansion Clear-rename Rename EntriesExtra "
+        "M Mbinary E F MT")
+    reqs = "".join(s + "\n" for s in [
+        "Root " + root,
+        "Valid-responses " + valid_responses,
+        "valid-requests",
+        "UseUnchanged",
+        "Argument m",
+        "Directory .",
+        root,
+        "co",
+        "noop",
+        "Argument m",
+        "rlog",
+    ])
+
+    cmd = [CVS]
+    if LIBDIR:
+        cmd += ["-L", LIBDIR]
+    cmd += ["--allow-root=" + r.repo, "server"]
+    wcdir = os.path.join(r.root, "srvwc")
+    os.makedirs(wcdir)
+    p = subprocess.Popen(cmd, cwd=wcdir, stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        out_b, err_b = p.communicate(reqs.encode("utf-8"), timeout=120)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        fail("server session did not complete within 120s (stalled flush?)")
+        return
+    out = out_b.decode("utf-8", "replace")
+
+    check_eq(p.returncode, 0, "server exit status (output:\n%s)" % out)
+    lines = out.split("\n")
+    check_eq(len([l for l in lines if l == "ok"]), 4,
+             "one ok per command (valid-requests, co, noop, rlog):\n" + out)
+    check(not any(l.startswith("error") for l in lines),
+          "server reported an error:\n" + out)
+    vr = [l for l in lines if l.startswith("Valid-requests ")]
+    check(vr and " co " in vr[0] and " noop " in vr[0],
+          "Valid-requests line missing or incomplete:\n" + out)
+    check("one\n" in out, "checked-out content of a.txt missing:\n" + out)
+    check("sub content\n" in out, "checked-out content of sub/b.txt missing:\n" + out)
+    # rlog output is M text; its internal line order must be preserved.
+    i_rcs = out.find("M RCS file:")
+    i_rev = out.find("M revision 1.1")
+    i_msg = out.find("M Initial revision")
+    check(0 <= i_rcs < i_rev < i_msg,
+          "rlog output incomplete or reordered (%d,%d,%d):\n%s"
+          % (i_rcs, i_rev, i_msg, out))
+    # The checkout must have been complete by the time its ok (the second of
+    # the four) arrived: nothing of the checkout may trail its terminator.
+    ok_at = [i for i, l in enumerate(lines) if l == "ok"]
+    content_at = [i for i, l in enumerate(lines) if l == "one" or l == "sub content"]
+    if len(ok_at) >= 2 and content_at:
+        check(max(content_at) < ok_at[1],
+              "checkout content arrived after the co terminator:\n" + out)
+
+
+@test("checkout -p sends the file body before its trailing partial line")
+def t_server_pipeout_order(r):
+    # `co -p` on a file that does not end in a newline emits, in order:
+    #   NoTranslateBegin / M <body> / MT text <tail> / NoTranslateEnd
+    # The body goes through cvs_output (staged); the tail and the
+    # NoTranslate brackets are written straight to the network buffer.  If
+    # staged text is not drained before those direct writes, the client
+    # prints the tail before the body, and - worse - NoTranslateEnd arrives
+    # first, so the client re-enables codepage translation before the body
+    # and silently mistranslates it.
+    body = "alpha\nbeta\ngamma no trailing newline"
+    r.import_tree("m", {"p.txt": body})
+    root = r.repo.replace(os.sep, "/")
+
+    valid_responses = (
+        "ok error Valid-requests Checked-in New-entry Checksum Copy-file "
+        "Blob-ref Blob-ref-created Blob-OTP Blob-url "
+        "Updated Created Update-existing Merged Patched Rcs-diff Mode "
+        "Mod-time Removed Remove-entry Set-static-directory "
+        "Clear-static-directory Set-sticky Clear-sticky Template "
+        "Notified Module-expansion Clear-rename Rename EntriesExtra "
+        "M Mbinary E F MT NoTranslateBegin NoTranslateEnd")
+    reqs = "".join(s + "\n" for s in [
+        "Root " + root,
+        "Valid-responses " + valid_responses,
+        "valid-requests",
+        "UseUnchanged",
+        "Argument -p",
+        "Argument m/p.txt",
+        "co",
+    ])
+
+    cmd = [CVS]
+    if LIBDIR:
+        cmd += ["-L", LIBDIR]
+    cmd += ["--allow-root=" + r.repo, "server"]
+    wcdir = os.path.join(r.root, "psrvwc")
+    os.makedirs(wcdir)
+    p = subprocess.Popen(cmd, cwd=wcdir, stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        out_b, _ = p.communicate(reqs.encode("utf-8"), timeout=120)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        fail("server session did not complete within 120s")
+        return
+    out = out_b.decode("utf-8", "replace")
+
+    i_begin = out.find("NoTranslateBegin")
+    i_body = out.find("M alpha")
+    i_tail = out.find("MT text")
+    i_end = out.find("NoTranslateEnd")
+
+    if i_begin < 0 or i_end < 0:
+        # The server only emits the brackets when the client advertises them;
+        # if this build does not, there is nothing to order.
+        check(i_body >= 0, "file body missing entirely:\n" + out)
+        return
+
+    check(0 <= i_begin < i_body,
+          "body arrived before NoTranslateBegin (%d,%d):\n%s" % (i_begin, i_body, out))
+    check(0 <= i_body < i_end,
+          "NoTranslateEnd arrived before the file body (%d,%d) - the client "
+          "would re-enable codepage translation before receiving it:\n%s"
+          % (i_body, i_end, out))
+    if i_tail >= 0:
+        check(i_body < i_tail,
+              "trailing partial line arrived before the body (%d,%d):\n%s"
+              % (i_body, i_tail, out))
+
+
+@test("a watched file checks out read-only, an unwatched one writable")
+def t_watched_readonly(r):
+    # "Is this file watched?" is answered per checked-out file from the
+    # repository's CVS/fileattr.xml.  The lookup must be per file (w.txt
+    # watched, n.txt not) and must use fncmp semantics: on Windows a
+    # case-variant name attribute still matches.
+    r.import_tree("m", {"w.txt": "watched\n", "n.txt": "not watched\n"})
+    attrdir = os.path.join(r.repo, "m", "CVS")
+    attr = os.path.join(attrdir, "fileattr.xml")
+
+    def fresh_checkout(sub):
+        wcroot = os.path.join(r.root, sub)
+        os.makedirs(wcroot)
+        r.cvs(["checkout", "m"], cwd=wcroot)
+        return os.path.join(wcroot, "m")
+
+    write(attr, '<?xml version="1.0"?>\n<fileattr>\n'
+                '  <file name="w.txt">\n    <watched/>\n  </file>\n'
+                '</fileattr>\n')
+    wc = fresh_checkout("wcA")
+    check(not os.access(os.path.join(wc, "w.txt"), os.W_OK),
+          "watched w.txt checked out writable")
+    check(os.access(os.path.join(wc, "n.txt"), os.W_OK),
+          "unwatched n.txt checked out read-only")
+
+    # The update path answers the same question when re-creating a file.
+    os.chmod(os.path.join(wc, "w.txt"), 0o644)
+    os.remove(os.path.join(wc, "w.txt"))
+    r.cvs(["update"], cwd=wc)
+    check(not os.access(os.path.join(wc, "w.txt"), os.W_OK),
+          "watched w.txt restored writable by update")
+
+    if sys.platform == "win32":
+        write(attr, '<?xml version="1.0"?>\n<fileattr>\n'
+                    '  <file name="W.TXT">\n    <watched/>\n  </file>\n'
+                    '</fileattr>\n')
+        wc = fresh_checkout("wcB")
+        check(not os.access(os.path.join(wc, "w.txt"), os.W_OK),
+              "case-variant watched name not honoured on Windows")
+
+    os.remove(attr)
+    wc = fresh_checkout("wcC")
+    check(os.access(os.path.join(wc, "w.txt"), os.W_OK),
+          "w.txt still read-only after the watch attribute was removed")
+
+
+@test("repository operations append well-formed history records")
+def t_history_records(r):
+    # History logging is enabled by the presence of CVSROOT/history (a full
+    # cvs init creates it; init -n does not, so create it the way an admin
+    # enabling logging would).  checkout, commit and tag must each append
+    # records, and every record must parse.
+    hist = os.path.join(r.repo, "CVSROOT", "history")
+    write(hist, "")
+    files = dict(("f%02d.txt" % i, "content %d\n" % i) for i in range(12))
+    r.import_tree("m", files)
+    n0 = len(read(hist).splitlines())
+
+    wc = r.checkout("m")
+    n1 = len(read(hist).splitlines())
+    check(n1 > n0, "checkout appended no history record (%d -> %d)" % (n0, n1))
+
+    write(os.path.join(wc, "f00.txt"), "changed\n")
+    r.cvs(["commit", "-m", "change"], cwd=wc)
+    n2 = len(read(hist).splitlines())
+    check(n2 > n1, "commit appended no history record (%d -> %d)" % (n1, n2))
+
+    r.cvs(["tag", "HT1"], cwd=wc)
+    n3 = len(read(hist).splitlines())
+    check(n3 > n2, "tag appended no history record (%d -> %d)" % (n2, n3))
+
+    for line in read(hist).splitlines():
+        if not line.strip():
+            continue
+        check(re.match(r"^[A-Za-z][0-9a-f]{8,16}\|[^|]*\|", line) is not None,
+              "malformed history record: %r" % line)
+
+    _, out = r.cvs(["history", "-e", "-a"], cwd=wc)
+    check("f00.txt" in out or "m" in out,
+          "cvs history reports nothing for the recorded operations:\n" + out)
+
+
 @test("a second checkout of the same module matches the first")
 def t_second_checkout(r):
     r.import_tree("m", {"a.txt": "one\n", "sub/b.txt": "two\n"})
@@ -347,6 +1148,34 @@ def t_second_checkout(r):
 
 
 # --------------------------------------------------------------------------- driver
+
+@xfail("small -kB binary second revision checks out byte for byte (BUG-blob-21 residual)",
+       "BUG-blob-21 is only partly fixed: a -kB revision below ~1.5 KB checks "
+       "out as a zero-length file in local mode; the committed blob is intact.")
+def t_binary_small_second_commit(r):
+    # Same shape as t_binary_second_commit, but a small payload.  The blob
+    # is written whole at commit (payload + a 16-byte header), yet a fresh
+    # checkout produces an empty file: data loss once the working copy that
+    # still holds the bytes is deleted.  t_binary_second_commit passes only
+    # because its 1541-byte payload sits just above the failing range.
+    payload1 = bytes(range(256))
+    payload2 = bytes(reversed(range(256)))  # 256 bytes
+    imp = os.path.join(r.root, "impbin")
+    os.makedirs(imp)
+    with open(os.path.join(imp, "b.dat"), "wb") as f:
+        f.write(payload1)
+    r.cvs(["import", "-m", "bin", "-kb", "mb", "VENDOR", "REL0"], cwd=imp)
+    wc = r.checkout("mb")
+    with open(os.path.join(wc, "b.dat"), "wb") as f:
+        f.write(payload2)
+    r.cvs(["commit", "-m", "second"], cwd=wc)
+    wc2root = os.path.join(r.root, "wc2")
+    os.makedirs(wc2root)
+    r.cvs(["checkout", "mb"], cwd=wc2root)
+    got = open(os.path.join(wc2root, "mb", "b.dat"), "rb").read()
+    check_eq(got, payload2,
+             "small binary second revision did not round trip (got %d bytes)"
+             % len(got))
 
 def main():
     global CVS, LIBDIR, VERBOSE, CURRENT, PASSED
@@ -384,7 +1213,17 @@ def main():
             fn(Repo(root))
         except Exception as e:  # noqa: BLE001 - a crashing test is a failed test
             fail("raised %s: %s" % (type(e).__name__, e))
-        if len(FAILURES) == before:
+        failed_now = len(FAILURES) > before
+        xreason = getattr(fn, "_xfail", None)
+        if xreason:
+            del FAILURES[before:]
+            if failed_now:
+                XFAILED.append(CURRENT)
+                print("  xfail " + CURRENT)
+            else:
+                fail("XPASS: expected to fail but passed - remove the xfail marker (%s)" % xreason)
+                print("  XPASS " + CURRENT)
+        elif not failed_now:
             PASSED += 1
             print("  ok    " + CURRENT)
         else:
@@ -393,7 +1232,10 @@ def main():
                 print("          " + msg.replace("\n", "\n          "))
 
     print()
-    print("%d passed, %d failed" % (PASSED, len(tests) - PASSED))
+    xf = len(XFAILED)
+    print("%d passed, %d failed%s" % (
+          PASSED, len(tests) - PASSED - xf,
+          (", %d xfail" % xf) if xf else ""))
 
     if not args.keep:
         shutil.rmtree(scratch, ignore_errors=True)
