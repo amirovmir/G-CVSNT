@@ -61,8 +61,13 @@ jobs:
           export DYLD_LIBRARY_PATH="$ROOT/lib"
           chmod +x "$BIN"
 
-          VERLINE=$("$BIN" --version 2>&1 | head -1)
-          echo "version line: $VERLINE"
+          # `cvsnt --version` (case 'v' in src/main.cpp) prints a leading
+          # blank line before the version banner, so the banner itself is
+          # on a later line, not line 1.
+          VEROUT=$("$BIN" --version 2>&1)
+          VERLINE=$(echo "$VEROUT" | grep -m1 "Build ${EXPECT_BUILD}" || true)
+          echo "version output:"
+          echo "$VEROUT"
           BUILDNO=$("$BIN" version -b)
           echo "version -b: $BUILDNO"
 
