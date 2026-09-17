@@ -165,6 +165,20 @@ jobs:
           fi
           echo "c_pserver_refused: PASS (exit $RC, no crash)" | tee -a "$RESULTS"
 
+      - name: Start cvslockd (required for local-mode access)
+        # A real install starts this via /Library/StartupItems/cvslockd
+        # (RunService -> plain `cvslockd`, no flags); a raw tarball
+        # extraction skips that, so cvs init/commit on a local ("-d
+        # /path") repo aborts with "Couldn't connect to lock server".
+        # cvslockd self-daemonizes (daemon(0,0)), so this returns immediately.
+        run: |
+          set -euxo pipefail
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
+          export DYLD_LIBRARY_PATH="$ROOT/lib"
+          "$ROOT/bin/cvslockd"
+          sleep 1
+          ls -la /tmp/lockserver_addr.sock
+
       - name: d. Local-mode CVS workflow smoke test
         run: |
           set -euxo pipefail
