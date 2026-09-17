@@ -87,7 +87,7 @@ jobs:
             else
               ref="refs/heads/${item}"; label="branch ${item}"
             fi
-            git fetch --no-tags "$url" "${ref}:refs/remotes/src/item"
+            git fetch --no-tags "$url" "+${ref}:refs/remotes/src/item"
             head=$(git rev-parse --short=7 refs/remotes/src/item)
             if ! git merge --no-ff --no-edit -m "ci: merge ${label} (${head})" refs/remotes/src/item; then
               echo "::error title=Merge conflict::${label} (${head}) does not merge onto ${BASE}${merged:+ after${merged}}"
