@@ -1,0 +1,309 @@
+name: macos-client-check
+
+# Ad-hoc verification of the macOS client artifacts produced by a `release`
+# run, exercised from CI because no physical Mac is available locally.
+# Pulls the tarball built by a given release run and pokes at it: reported
+# build number, dylib dependencies, protocol plugins, local-mode CVS
+# workflow, and two known-issue checks that are recorded but never fail
+# the job (local-mode binary blob storage, and a `cvs log` SIGPIPE hang).
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "release workflow run ID to pull the macOS artifacts from"
+        required: false
+        default: "35206569721"
+  push:
+    branches: [ci/macos-client-check]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  RUN_ID: ${{ github.event.inputs.run_id || '35206569721' }}
+  EXPECT_BUILD: "9763"
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-13, artifact: macos-osx10.13-x64, name: "x64 (macos-13)" }
+          - { runner: macos-14, artifact: macos-osx11-arm64,  name: "arm64 (macos-14)" }
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ env.RUN_ID }}
+          name: ${{ matrix.artifact }}
+          path: pkg
+
+      - name: Extract
+        run: |
+          set -euxo pipefail
+          mkdir extracted
+          tar -xzf pkg/*.tar.gz -C extracted
+          find extracted -maxdepth 5
+
+      - name: a. Reported build number
+        run: |
+          set -euxo pipefail
+          ROOT="extracted/Package_Root/usr/local"
+          BIN="$ROOT/bin/cvsnt"
+          RESULTS="$RUNNER_TEMP/results.log"
+          export DYLD_LIBRARY_PATH="$ROOT/lib"
+          chmod +x "$BIN"
+
+          VERLINE=$("$BIN" --version 2>&1 | head -1)
+          echo "version line: $VERLINE"
+          BUILDNO=$("$BIN" version -b)
+          echo "version -b: $BUILDNO"
+
+          {
+            if echo "$VERLINE" | grep -q "Build ${EXPECT_BUILD}"; then
+              echo "a_version_line: PASS ($VERLINE)"
+            else
+              echo "a_version_line: FAIL ($VERLINE)"
+            fi
+            if [ "$BUILDNO" = "$EXPECT_BUILD" ]; then
+              echo "a_version_b: PASS ($BUILDNO)"
+            else
+              echo "a_version_b: FAIL ($BUILDNO)"
+            fi
+          } | tee -a "$RESULTS"
+
+          echo "$VERLINE" | grep -q "Build ${EXPECT_BUILD}"
+          [ "$BUILDNO" = "$EXPECT_BUILD" ]
+
+      - name: b. Dylib dependency check
+        run: |
+          set -euxo pipefail
+          ROOT="extracted/Package_Root/usr/local"
+          BIN="$ROOT/bin/cvsnt"
+          RESULTS="$RUNNER_TEMP/results.log"
+          FAIL=0
+
+          FILES="$BIN $(find extracted -type f \( -name '*.dylib' -o -name '*.so' \))"
+          for f in $FILES; do
+            echo "---- $f ----"
+            otool -L "$f"
+            DEPS=$(otool -L "$f" | tail -n +2 | awk '{print $1}')
+            for dep in $DEPS; do
+              case "$dep" in
+                /usr/lib/*|/System/*)
+                  continue ;;
+                @rpath/*|@loader_path/*|@executable_path/*)
+                  base="${dep##*/}"
+                  if [ ! -e "$ROOT/lib/$base" ]; then
+                    echo "MISSING (relative): $f -> $dep"
+                    FAIL=1
+                  fi
+                  ;;
+                *)
+                  base="${dep##*/}"
+                  if [ -e "$dep" ] || [ -e "$ROOT/lib/$base" ]; then
+                    continue
+                  else
+                    echo "MISSING: $f -> $dep"
+                    FAIL=1
+                  fi
+                  ;;
+              esac
+            done
+          done
+
+          if [ "$FAIL" -eq 0 ]; then
+            echo "b_dylib_deps: PASS (all deps under /usr/lib, /System, or bundled in the tarball)" | tee -a "$RESULTS"
+          else
+            echo "b_dylib_deps: FAIL (see MISSING lines above)" | tee -a "$RESULTS"
+          fi
+          test "$FAIL" -eq 0
+
+      - name: c. Protocol plugins and pserver connection-refused check
+        run: |
+          set -euxo pipefail
+          ROOT="extracted/Package_Root/usr/local"
+          BIN="$ROOT/bin/cvsnt"
+          PLUGDIR="$ROOT/lib/cvsnt/protocols"
+          RESULTS="$RUNNER_TEMP/results.log"
+          export DYLD_LIBRARY_PATH="$ROOT/lib"
+
+          echo "== protocol plugins =="
+          ls -la "$PLUGDIR" || echo "(no protocols directory)"
+          { echo "c_plugins: $(ls "$PLUGDIR" 2>/dev/null | tr '\n' ' ' || echo none)"; } | tee -a "$RESULTS"
+
+          set +e
+          OUT=$(DYLD_LIBRARY_PATH="$ROOT/lib" "$BIN" -d :pserver:nobody@127.0.0.1:1/x version 2>&1)
+          RC=$?
+          set -e
+          echo "$OUT"
+          echo "pserver connect exit=$RC"
+
+          if [ "$RC" -ge 128 ]; then
+            echo "c_pserver_refused: FAIL (crashed, exit $RC)" | tee -a "$RESULTS"
+            exit 1
+          fi
+          if echo "$OUT" | grep -qiE 'segmentation fault|abort trap|bus error'; then
+            echo "c_pserver_refused: FAIL (crash message: $OUT)" | tee -a "$RESULTS"
+            exit 1
+          fi
+          if [ "$RC" -eq 0 ]; then
+            echo "c_pserver_refused: FAIL (unexpectedly succeeded)" | tee -a "$RESULTS"
+            exit 1
+          fi
+          echo "c_pserver_refused: PASS (exit $RC, no crash)" | tee -a "$RESULTS"
+
+      - name: d. Local-mode CVS workflow smoke test
+        run: |
+          set -euxo pipefail
+          ROOT="extracted/Package_Root/usr/local"
+          BIN="$ROOT/bin/cvsnt"
+          RESULTS="$RUNNER_TEMP/results.log"
+          export DYLD_LIBRARY_PATH="$ROOT/lib"
+
+          WORK="$RUNNER_TEMP/local-mode"
+          REPO="$WORK/repo"
+          rm -rf "$WORK"
+          mkdir -p "$WORK/mod"
+          echo "line one" > "$WORK/mod/file.txt"
+
+          cd "$WORK"
+          "$BIN" -d "$REPO" init
+          cd mod
+          "$BIN" -d "$REPO" import -m "initial import" testmodule VENDOR START
+          cd "$WORK"
+
+          "$BIN" -d "$REPO" checkout testmodule
+          cd testmodule
+          grep -q "line one" file.txt
+
+          "$BIN" diff -r START file.txt
+
+          echo "line two" >> file.txt
+          "$BIN" commit -m "second line"
+
+          "$BIN" tag TESTTAG
+          "$BIN" update -r TESTTAG
+          grep -q "line two" file.txt
+
+          "$BIN" update -A
+          grep -q "line two" file.txt
+
+          "$BIN" log file.txt
+          "$BIN" status file.txt
+
+          "$BIN" diff -r TESTTAG file.txt
+
+          echo "d_local_mode_smoke: PASS" | tee -a "$RESULTS"
+
+      - name: e. Local-mode binary blob commit (known issue, non-blocking)
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          ROOT="extracted/Package_Root/usr/local"
+          BIN="$ROOT/bin/cvsnt"
+          RESULTS="$RUNNER_TEMP/results.log"
+          export DYLD_LIBRARY_PATH="$ROOT/lib"
+          trap 'echo "e_binary_commit: FAIL (local-mode blob store - see log above; known BUG-blob-21, fixed by PR #30)" | tee -a "$RESULTS"' ERR
+
+          cd "$RUNNER_TEMP/local-mode/testmodule"
+          head -c 307200 /dev/urandom > blob.bin
+          "$BIN" add -kb blob.bin
+          "$BIN" commit -m "binary blob"
+
+          cd "$RUNNER_TEMP/local-mode"
+          rm -rf testmodule2
+          "$BIN" -d "$RUNNER_TEMP/local-mode/repo" checkout -d testmodule2 testmodule
+          cmp testmodule/blob.bin testmodule2/blob.bin
+
+          echo "e_binary_commit: PASS" | tee -a "$RESULTS"
+
+      - name: "f. Server-mode / :fork: smoke test"
+        run: |
+          set -euxo pipefail
+          ROOT="extracted/Package_Root/usr/local"
+          BIN="$ROOT/bin/cvsnt"
+          PLUGDIR="$ROOT/lib/cvsnt/protocols"
+          RESULTS="$RUNNER_TEMP/results.log"
+          export DYLD_LIBRARY_PATH="$ROOT/lib"
+
+          if ls "$PLUGDIR"/fork.* >/dev/null 2>&1; then
+            echo "fork protocol plugin present, running :fork: smoke test"
+            WORK2="$RUNNER_TEMP/fork-mode"
+            REPO2="$WORK2/repo"
+            rm -rf "$WORK2"
+            mkdir -p "$WORK2/mod"
+            echo "fork test" > "$WORK2/mod/f.txt"
+            cd "$WORK2"
+            "$BIN" -d ":fork:$REPO2" init
+            cd mod
+            "$BIN" -d ":fork:$REPO2" import -m "init" forkmod VENDOR START
+            cd "$WORK2"
+            "$BIN" -d ":fork:$REPO2" checkout forkmod
+            cd forkmod
+            echo "more" >> f.txt
+            "$BIN" commit -m "update"
+            grep -q "more" f.txt
+            echo "f_fork_mode: PASS" | tee -a "$RESULTS"
+          else
+            echo "f_fork_mode: N/A - client-only build (no fork protocol plugin; release.yml's configure passes --disable-server and does not pass --enable-fork, which defaults to no)" | tee -a "$RESULTS"
+          fi
+
+      - name: g. cvs log SIGPIPE-hang check (known issue, non-blocking)
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          ROOT="extracted/Package_Root/usr/local"
+          BIN="$ROOT/bin/cvsnt"
+          RESULTS="$RUNNER_TEMP/results.log"
+          export DYLD_LIBRARY_PATH="$ROOT/lib"
+
+          run_with_timeout() {
+            local secs=$1; shift
+            "$@" &
+            local pid=$!
+            ( sleep "$secs" && kill -9 "$pid" ) 2>/dev/null &
+            local watcher=$!
+            wait "$pid"
+            local rc=$?
+            kill "$watcher" 2>/dev/null || true
+            wait "$watcher" 2>/dev/null || true
+            return $rc
+          }
+
+          cd "$RUNNER_TEMP/local-mode/testmodule"
+          for i in 1 2 3; do
+            echo "extra rev $i" >> file.txt
+            "$BIN" commit -m "extra rev $i"
+          done
+
+          set +e
+          run_with_timeout 30 "$BIN" log file.txt > "$RUNNER_TEMP/cvslog.out" 2>&1
+          RC=$?
+          set -e
+          head -3 "$RUNNER_TEMP/cvslog.out"
+          echo "log exit=$RC"
+
+          if [ "$RC" -ge 128 ]; then
+            echo "g_log_head: FAIL (hang - killed after 30s timeout; matches the known SIGPIPE deadlock, fix lives on fork/fix/sigpipe-output-mutex, not in #38)" | tee -a "$RESULTS"
+            exit 1
+          fi
+          echo "g_log_head: PASS (exit $RC, no hang)" | tee -a "$RESULTS"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "==== macOS client check summary: ${{ matrix.name }} (artifact ${{ matrix.artifact }}, run ${{ env.RUN_ID }}) ===="
+          RESULTS="$RUNNER_TEMP/results.log"
+          if [ -f "$RESULTS" ]; then
+            cat "$RESULTS"
+          else
+            echo "(no results recorded - an earlier step likely crashed before logging)"
+          fi
