@@ -55,7 +55,7 @@ jobs:
       - name: a. Reported build number
         run: |
           set -euxo pipefail
-          ROOT="extracted/Package_Root/usr/local"
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           BIN="$ROOT/bin/cvsnt"
           RESULTS="$RUNNER_TEMP/results.log"
           export DYLD_LIBRARY_PATH="$ROOT/lib"
@@ -90,7 +90,7 @@ jobs:
       - name: b. Dylib dependency check
         run: |
           set -euxo pipefail
-          ROOT="extracted/Package_Root/usr/local"
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           BIN="$ROOT/bin/cvsnt"
           RESULTS="$RUNNER_TEMP/results.log"
           FAIL=0
@@ -134,7 +134,7 @@ jobs:
       - name: c. Protocol plugins and pserver connection-refused check
         run: |
           set -euxo pipefail
-          ROOT="extracted/Package_Root/usr/local"
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           BIN="$ROOT/bin/cvsnt"
           PLUGDIR="$ROOT/lib/cvsnt/protocols"
           RESULTS="$RUNNER_TEMP/results.log"
@@ -168,7 +168,7 @@ jobs:
       - name: d. Local-mode CVS workflow smoke test
         run: |
           set -euxo pipefail
-          ROOT="extracted/Package_Root/usr/local"
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           BIN="$ROOT/bin/cvsnt"
           RESULTS="$RUNNER_TEMP/results.log"
           export DYLD_LIBRARY_PATH="$ROOT/lib"
@@ -209,10 +209,11 @@ jobs:
           echo "d_local_mode_smoke: PASS" | tee -a "$RESULTS"
 
       - name: e. Local-mode binary blob commit (known issue, non-blocking)
+        if: always()
         continue-on-error: true
         run: |
           set -euxo pipefail
-          ROOT="extracted/Package_Root/usr/local"
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           BIN="$ROOT/bin/cvsnt"
           RESULTS="$RUNNER_TEMP/results.log"
           export DYLD_LIBRARY_PATH="$ROOT/lib"
@@ -231,9 +232,10 @@ jobs:
           echo "e_binary_commit: PASS" | tee -a "$RESULTS"
 
       - name: "f. Server-mode / :fork: smoke test"
+        if: always()
         run: |
           set -euxo pipefail
-          ROOT="extracted/Package_Root/usr/local"
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           BIN="$ROOT/bin/cvsnt"
           PLUGDIR="$ROOT/lib/cvsnt/protocols"
           RESULTS="$RUNNER_TEMP/results.log"
@@ -262,13 +264,15 @@ jobs:
           fi
 
       - name: g. cvs log SIGPIPE-hang check (known issue, non-blocking)
+        if: always()
         continue-on-error: true
         run: |
           set -euxo pipefail
-          ROOT="extracted/Package_Root/usr/local"
+          ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           BIN="$ROOT/bin/cvsnt"
           RESULTS="$RUNNER_TEMP/results.log"
           export DYLD_LIBRARY_PATH="$ROOT/lib"
+          trap 'echo "g_log_head: FAIL (setup error - see log above; testmodule may be missing if step d failed)" | tee -a "$RESULTS"' ERR
 
           run_with_timeout() {
             local secs=$1; shift
@@ -289,6 +293,10 @@ jobs:
             "$BIN" commit -m "extra rev $i"
           done
 
+          # the ERR trap above is only for the setup phase; run_with_timeout
+          # legitimately returns non-zero (e.g. 137 on a real hang) and that
+          # is handled explicitly below, not via the trap
+          trap - ERR
           set +e
           run_with_timeout 30 "$BIN" log file.txt > "$RUNNER_TEMP/cvslog.out" 2>&1
           RC=$?
