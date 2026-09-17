@@ -170,14 +170,19 @@ jobs:
         # (RunService -> plain `cvslockd`, no flags); a raw tarball
         # extraction skips that, so cvs init/commit on a local ("-d
         # /path") repo aborts with "Couldn't connect to lock server".
-        # cvslockd self-daemonizes (daemon(0,0)), so this returns immediately.
+        # Run in debug/foreground mode (-d) backgrounded ourselves, with
+        # its own log captured, so a hang downstream (see step d) has a
+        # diagnostic trail instead of a silent black box.
         run: |
           set -euxo pipefail
           ROOT="$GITHUB_WORKSPACE/extracted/Package_Root/usr/local"
           export DYLD_LIBRARY_PATH="$ROOT/lib"
-          "$ROOT/bin/cvslockd"
-          sleep 1
+          nohup "$ROOT/bin/cvslockd" -d > "$RUNNER_TEMP/cvslockd.log" 2>&1 &
+          disown
+          sleep 2
           ls -la /tmp/lockserver_addr.sock
+          echo "-- cvslockd startup log so far --"
+          cat "$RUNNER_TEMP/cvslockd.log" || true
 
       - name: d. Local-mode CVS workflow smoke test
         run: |
@@ -193,33 +198,57 @@ jobs:
           mkdir -p "$WORK/mod"
           echo "line one" > "$WORK/mod/file.txt"
 
-          cd "$WORK"
-          "$BIN" -d "$REPO" init
-          cd mod
-          "$BIN" -d "$REPO" import -m "initial import" testmodule VENDOR START
-          cd "$WORK"
+          # The whole sequence runs under a bounded timeout: a hang in any
+          # single command (e.g. a lock-server round trip) must not eat the
+          # entire job's timeout-minutes budget and hide behind a bare
+          # "cancelled". The -x trace still shows the last command started.
+          smoke_body() {
+            cd "$WORK"
+            "$BIN" -d "$REPO" init
+            cd mod
+            "$BIN" -d "$REPO" import -m "initial import" testmodule VENDOR START
+            cd "$WORK"
 
-          "$BIN" -d "$REPO" checkout testmodule
-          cd testmodule
-          grep -q "line one" file.txt
+            "$BIN" -d "$REPO" checkout testmodule
+            cd testmodule
+            grep -q "line one" file.txt
 
-          "$BIN" diff -r START file.txt
+            "$BIN" diff -r START file.txt
 
-          echo "line two" >> file.txt
-          "$BIN" commit -m "second line"
+            echo "line two" >> file.txt
+            "$BIN" commit -m "second line"
 
-          "$BIN" tag TESTTAG
-          "$BIN" update -r TESTTAG
-          grep -q "line two" file.txt
+            "$BIN" tag TESTTAG
+            "$BIN" update -r TESTTAG
+            grep -q "line two" file.txt
 
-          "$BIN" update -A
-          grep -q "line two" file.txt
+            "$BIN" update -A
+            grep -q "line two" file.txt
 
-          "$BIN" log file.txt
-          "$BIN" status file.txt
+            "$BIN" log file.txt
+            "$BIN" status file.txt
 
-          "$BIN" diff -r TESTTAG file.txt
+            "$BIN" diff -r TESTTAG file.txt
+          }
 
+          set +e
+          smoke_body &
+          PID=$!
+          ( sleep 90 && kill -9 "$PID" ) 2>/dev/null &
+          WATCHER=$!
+          wait "$PID"
+          RC=$?
+          kill "$WATCHER" 2>/dev/null || true
+          wait "$WATCHER" 2>/dev/null || true
+          set -e
+
+          if [ "$RC" -ge 128 ]; then
+            echo "d_local_mode_smoke: FAIL (hung - killed after 90s; see the -x trace above for the last command that started, and the cvslockd log in the Summary step)" | tee -a "$RESULTS"
+            exit 1
+          elif [ "$RC" -ne 0 ]; then
+            echo "d_local_mode_smoke: FAIL (exit $RC)" | tee -a "$RESULTS"
+            exit 1
+          fi
           echo "d_local_mode_smoke: PASS" | tee -a "$RESULTS"
 
       - name: e. Local-mode binary blob commit (known issue, non-blocking)
@@ -334,3 +363,5 @@ jobs:
           else
             echo "(no results recorded - an earlier step likely crashed before logging)"
           fi
+          echo "==== cvslockd log ===="
+          cat "$RUNNER_TEMP/cvslockd.log" 2>/dev/null || echo "(no cvslockd log found)"
