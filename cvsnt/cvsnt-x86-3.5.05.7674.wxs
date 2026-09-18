@@ -544,6 +544,20 @@
                                     <File Id="mini.dll" Name="mini.dll" KeyPath="yes" DiskId="1" Source="cvsnt-2.5.05.3744\ReleaseWin32\mdns\mini.dll" />
                                 </Component>
                             </Directory>
+                            <Directory Id="CvsntTriggersFolder" Name="triggers">
+                                <Component Id="CheckoutTrigger" Guid="{B56689BF-E27A-4887-8DC6-D75E9D1DB0D3}">
+                                    <File Id="checkout_trigger.dll" Name="checkout.dll" KeyPath="yes" DiskId="1" Source="cvsnt-2.5.05.3744\ReleaseWin32\triggers\checkout.dll" />
+                                </Component>
+                                <Component Id="EmailTrigger" Guid="{AC827C0F-2F96-4B0A-9DBE-0D4E32C812C6}">
+                                    <File Id="email_trigger.dll" Name="email.dll" KeyPath="yes" DiskId="1" Source="cvsnt-2.5.05.3744\ReleaseWin32\triggers\email.dll" />
+                                </Component>
+                                <Component Id="InfoTrigger" Guid="{303C2B69-92ED-412E-A326-F686E7F03D67}">
+                                    <File Id="info_trigger.dll" Name="info.dll" KeyPath="yes" DiskId="1" Source="cvsnt-2.5.05.3744\ReleaseWin32\triggers\info.dll" />
+                                </Component>
+                                <Component Id="ScriptTrigger" Guid="{1174EC1E-F567-4DD9-BC77-CEB34462C779}">
+                                    <File Id="script_trigger.dll" Name="script.dll" KeyPath="yes" DiskId="1" Source="cvsnt-2.5.05.3744\ReleaseWin32\triggers\script.dll" />
+                                </Component>
+                            </Directory>
                         </Directory>
                         <Directory Id="WindowsFolder.30729.4148.Microsoft_VC90_ATL_x86.QFE.0901F145_82C9_3BF6_A91B_31F6791950EA" Name="Windows">
                             <Directory Id="SystemFolder.30729.4148.Microsoft_VC90_ATL_x86.QFE.0901F145_82C9_3BF6_A91B_31F6791950EA" Name="system32">
@@ -914,6 +928,12 @@
                 <Feature Id="mini_mdns" AllowAdvertise="no" Description="CVSNT internal zeroconf client" Level="3" Title="internal">
                     <ComponentRef Id="MiniMdns" />
                 </Feature>
+            </Feature>
+            <Feature Id="Triggers" AllowAdvertise="no" Description="Server-side trigger plugins (required for cvs init)" Level="3" Title="Triggers">
+                <ComponentRef Id="CheckoutTrigger" />
+                <ComponentRef Id="EmailTrigger" />
+                <ComponentRef Id="InfoTrigger" />
+                <ComponentRef Id="ScriptTrigger" />
             </Feature>
             <Feature Id="CvsAgent" AllowAdvertise="no" Description="CVS Agent stores passwords securely in memory rather than write them to disk" Level="3" Title="Cvs Agent">
                 <ComponentRef Id="CvsAgent" />
