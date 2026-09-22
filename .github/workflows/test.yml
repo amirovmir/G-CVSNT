@@ -369,6 +369,35 @@ jobs:
                exit 1 ;;
           esac
 
+      - name: "Client under a uid with no passwd entry"
+        if: ${{ !cancelled() && steps.contour.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          run_as_4242() {
+            local desc="$1"; shift
+            local rc=0
+            docker run --rm --network host --user 4242:4242 --tmpfs /work:uid=4242,gid=4242,size=256m \
+              "$@" cvsnt-test:"$VERSION" bash -c '
+                getent passwd 4242 && { echo "::error::uid 4242 unexpectedly has a passwd entry in the image"; exit 1; }
+                set -e
+                cd /work
+                /usr/local/cvsnt/bin/cvs -d :pserver:cvs:cvs@127.0.0.1:2401/cvs version
+                /usr/local/cvsnt/bin/cvs -d :pserver:cvs:cvs@127.0.0.1:2401/cvs checkout proj
+                ls proj
+              ' || rc=$?
+            if [ "$rc" -eq 139 ]; then
+              echo "::error title=getpwuid(4242) segfault::$desc: cvs crashed (exit 139) with no passwd entry for its uid"
+              exit 1
+            elif [ "$rc" -ne 0 ]; then
+              echo "::error title=cvs failed under an unmapped uid::$desc: exit $rc"
+              exit 1
+            fi
+            echo "    $desc: ok"
+          }
+          run_as_4242 "HOME unset"
+          run_as_4242 "HOME set" -e HOME=/work
+
       - name: Tear down (drops the repository volume)
         if: always()
         run: bash ci/contour/down.sh ${{ job.status == 'failure' && 'logs' || '' }}
