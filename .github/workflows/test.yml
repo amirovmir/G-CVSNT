@@ -144,8 +144,8 @@ jobs:
       - name: Build the server tree (docker/Dockerfile, stage build)
         id: build
         run: |
-          docker build --target runtime -t cvsnt-build:"$VERSION" -f docker/Dockerfile .
-          docker build -t cvsnt-test:"$VERSION" -f ci/test.Dockerfile --build-arg BASE=cvsnt-build:"$VERSION" .
+          docker build --target runtime -t cvsnt-runtime:"$VERSION" -f docker/Dockerfile .
+          docker build -t cvsnt-test:"$VERSION" -f ci/test.Dockerfile --build-arg BASE=cvsnt-runtime:"$VERSION" .
 
       - name: regress.py + testcvs.py inside the build image
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -327,8 +327,8 @@ jobs:
       - name: Build the server tree and the client image
         id: build
         run: |
-          docker build --target runtime -t cvsnt-build:"$VERSION" -f docker/Dockerfile .
-          docker build -t cvsnt-test:"$VERSION" -f ci/test.Dockerfile --build-arg BASE=cvsnt-build:"$VERSION" .
+          docker build --target runtime -t cvsnt-runtime:"$VERSION" -f docker/Dockerfile .
+          docker build -t cvsnt-test:"$VERSION" -f ci/test.Dockerfile --build-arg BASE=cvsnt-runtime:"$VERSION" .
 
       - name: Server images (authserver, cafs-server, cvslockd) from the same build stage
         id: images
@@ -368,6 +368,44 @@ jobs:
             *) echo "::error title=import -kB check inconclusive::repro_import_kB.sh exited $rc: the client crashed or never produced a checkout, so this run proves nothing either way - see the step log"
                exit 1 ;;
           esac
+
+      - name: "Client under a uid with no passwd entry"
+        if: ${{ !cancelled() && steps.contour.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          run_as_4242() {
+            local desc="$1"; shift
+            local rc=0
+            docker run --rm --network host --user 4242:4242 --tmpfs /work:uid=4242,gid=4242,size=256m \
+              "$@" cvsnt-test:"$VERSION" bash -c '
+                getent passwd 4242 && { echo "::error::uid 4242 unexpectedly has a passwd entry in the image"; exit 1; }
+                set -e
+                cd /work
+                /usr/local/cvsnt/bin/cvs -d :pserver:cvs:cvs@127.0.0.1:2401/cvs version
+                /usr/local/cvsnt/bin/cvs -d :pserver:cvs:cvs@127.0.0.1:2401/cvs checkout proj
+                ls proj
+              ' || rc=$?
+            echo "$rc"
+          }
+          # HOME set: no passwd entry, but $HOME is a real, writable fallback -
+          # this must fully succeed.
+          rc=$(run_as_4242 "HOME set" -e HOME=/work)
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=cvs failed under an unmapped uid with HOME set::exit $rc"
+            exit 1
+          fi
+          echo "    HOME set: ok"
+
+          # HOME unset: no passwd entry and no fallback - #43 documents this as
+          # a degrade (an error exit), not a crash. Only a segfault is a failure
+          # here; run it after the HOME-set case so both are always exercised.
+          rc=$(run_as_4242 "HOME unset")
+          if [ "$rc" -eq 139 ]; then
+            echo "::error title=getpwuid(4242) segfault::HOME unset: cvs crashed (exit 139) with no passwd entry and no HOME fallback"
+            exit 1
+          fi
+          echo "    HOME unset: exit $rc (not a crash)"
 
       - name: Tear down (drops the repository volume)
         if: always()
